@@ -164,6 +164,24 @@ func (c *Client) setInstance(instance Instance) {
 	c.stateMu.Unlock()
 }
 
+// DetachInstance transfers ownership of a private runtime from the client to
+// the caller. After a successful detach, closing the client only closes its
+// protocol transport. The returned Instance remains responsible for the
+// private process, daemon, and SDK-owned state until Shutdown is called.
+//
+// This is the safe-run boundary for applications that let a worker client
+// come and go while a session owner supervises the runtime independently.
+func (c *Client) DetachInstance() (Instance, bool) {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	if c.instance == nil {
+		return nil, false
+	}
+	instance := c.instance
+	c.instance = nil
+	return instance, true
+}
+
 type subscriber struct {
 	events chan Event
 	errors chan error

@@ -32,6 +32,33 @@ There are two deployment patterns:
 1. **Connect to a shared instance.** Start `jcode api-bridge` once, then dial its owner-only Unix socket and pass the connection to `NewClient`. This is suitable for editor plugins, dashboards, and tools that intentionally operate on the user's live sessions.
 2. **Own a private instance.** `jcode.Launch` starts a separately configured bridge/daemon, gives it a separate home and socket, and returns a client that owns shutdown. `LaunchInstance` is available when the caller needs to control dialing. The Go SDK still does not provide typed session helpers, so protocol requests remain explicit.
 
+### Safe-run ownership
+
+`Connect` is always non-owning. It attaches to an existing runtime, and
+`Client.Close` closes only that client's transport. It never stops the shared
+daemon. `Launch` is different: the returned client owns the private process,
+daemon, instance home, and cleanup through its internal `Instance` handle.
+
+When a worker connection must be allowed to close while the private session
+continues, transfer the private ownership explicitly:
+
+```go
+client, err := jcode.Launch(ctx, jcode.LaunchOptions{JcodeHome: home})
+if err != nil { return err }
+owner, ok := client.DetachInstance()
+if !ok { return errors.New("launch did not return an owned instance") }
+_ = client.Close() // transport only; the safe-run owner remains alive
+defer owner.Shutdown() // explicit owner shutdown stops the private runtime
+```
+
+This is intentionally opt-in. It does not make arbitrary clients immortal or
+change shared-runtime shutdown behavior. The owner is responsible for keeping
+the `Instance` handle alive and calling `Shutdown`; shutdown is idempotent.
+The SDK does not run an implicit infinite supervisor. Reconnect remains
+explicit and bounded by `ReconnectPolicy.MaxAttempts`, with
+`reconnect_failed`, `resume_failed`, and `reconnected` observations exposing
+attempts and outcomes. In-flight requests are never replayed.
+
 A shared connection sees the user's sessions and actions are visible in their terminal. A private connection must use a distinct state directory and socket. Never point a private process at the user's live jcode home.
 
 ## Shared connect: one-shot CLI-like flow
