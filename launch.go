@@ -74,6 +74,10 @@ type LaunchOptions struct {
 	InheritStderr  bool
 	// ClientOptions controls the protocol client created by Launch.
 	ClientOptions Options
+	// Observer receives redacted startup lifecycle metadata. If set, it is also
+	// used by the protocol client created by Launch unless ClientOptions.Observer
+	// is explicitly provided.
+	Observer Observer
 }
 
 func (o LaunchOptions) withDefaults() LaunchOptions {
@@ -132,22 +136,49 @@ func (i *launchedInstance) Shutdown() error {
 // Launch starts a private bridge and connects a Client to it. Any failure
 // after the process starts performs best-effort teardown before returning.
 func Launch(ctx context.Context, options LaunchOptions) (*Client, error) {
+	observer := options.Observer
+	if observer == nil {
+		observer = options.ClientOptions.Observer
+	}
+	emitLaunchObservation(observer, Observation{Kind: "launch_start"})
 	instance, err := launchInstance(options)
 	if err != nil {
+		emitLaunchObservation(observer, Observation{Kind: "launch_error", Error: string(launchErrorCode(err))})
 		return nil, err
 	}
+	emitLaunchObservation(observer, Observation{Kind: "launch_ready"})
 	tr, err := dialUnix(ctx, instance.SocketPath())
 	if err != nil {
 		_ = instance.Shutdown()
+		emitLaunchObservation(observer, Observation{Kind: "launch_error", Error: string(LaunchTransportFailed)})
 		return nil, &LaunchError{Code: LaunchTransportFailed, Err: err}
 	}
-	client, err := NewClient(ctx, tr, options.ClientOptions)
+	clientOptions := options.ClientOptions
+	if clientOptions.Observer == nil {
+		clientOptions.Observer = observer
+	}
+	client, err := NewClient(ctx, tr, clientOptions)
 	if err != nil {
 		_ = instance.Shutdown()
+		emitLaunchObservation(observer, Observation{Kind: "launch_error", Error: string(LaunchHandshakeFailed)})
 		return nil, &LaunchError{Code: LaunchHandshakeFailed, Err: err}
 	}
 	client.setInstance(instance)
 	return client, nil
+}
+
+func launchErrorCode(err error) LaunchErrorCode {
+	var launchErr *LaunchError
+	if errors.As(err, &launchErr) {
+		return launchErr.Code
+	}
+	return LaunchStartupFailed
+}
+
+func emitLaunchObservation(observer Observer, observation Observation) {
+	if observer != nil {
+		observer.Observe(observation)
+	}
 }
 
 // LaunchInstance starts an isolated bridge without connecting the protocol
@@ -199,13 +230,7 @@ func launchInstance(options LaunchOptions) (Instance, error) {
 	if cmd.Dir == "" {
 		cmd.Dir = "."
 	}
-	env := os.Environ()
-	env = append(env, "JCODE_HOME="+home, "JCODE_RUNTIME_DIR="+runtimeDir,
-		"JCODE_API_SOCKET="+socketPath, "JCODE_SOCKET="+filepath.Join(runtimeDir, "jcode.sock"))
-	for key, value := range o.Env {
-		env = append(env, key+"="+value)
-	}
-	cmd.Env = env
+	cmd.Env = launchEnvironment(home, runtimeDir, socketPath, o.Env)
 	cmd.Stdin = nil
 	var stderr io.ReadCloser
 	if o.InheritStderr {
@@ -244,7 +269,7 @@ func launchInstance(options LaunchOptions) (Instance, error) {
 		case waitErr := <-waitDone:
 			stderrText := <-stderrDone
 			cleanupOnError()
-			return nil, &LaunchError{Code: LaunchStartupFailed, Binary: binary, Stderr: stderrText, Err: waitErr}
+			return nil, &LaunchError{Code: LaunchStartupFailed, Binary: binary, Stderr: redactSecrets(stderrText, o.Env), Err: waitErr}
 		default:
 		}
 		time.Sleep(25 * time.Millisecond)
@@ -252,8 +277,46 @@ func launchInstance(options LaunchOptions) (Instance, error) {
 	terminateProcess(cmd, waitDone)
 	stderrText := <-stderrDone
 	cleanupOnError()
-	return nil, &LaunchError{Code: LaunchStartupTimeout, Binary: binary, Stderr: stderrText,
+	return nil, &LaunchError{Code: LaunchStartupTimeout, Binary: binary, Stderr: redactSecrets(stderrText, o.Env),
 		Err: fmt.Errorf("no API socket at %s within %s", socketPath, o.StartupTimeout)}
+}
+
+// launchEnvironment applies explicit SDK credentials as replacements rather
+// than appending duplicate keys. This matters for API-key-only providers:
+// runtimes and platforms differ in whether the first or last duplicate wins.
+func launchEnvironment(home, runtimeDir, socketPath string, overrides map[string]string) []string {
+	values := make(map[string]string)
+	for _, entry := range os.Environ() {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok {
+			values[key] = value
+		}
+	}
+	values["JCODE_HOME"] = home
+	values["JCODE_RUNTIME_DIR"] = runtimeDir
+	values["JCODE_API_SOCKET"] = socketPath
+	values["JCODE_SOCKET"] = filepath.Join(runtimeDir, "jcode.sock")
+	for key, value := range overrides {
+		values[key] = value
+	}
+	env := make([]string, 0, len(values))
+	for key, value := range values {
+		env = append(env, key+"="+value)
+	}
+	return env
+}
+
+// redactSecrets keeps child diagnostics actionable without allowing an API
+// key supplied through LaunchOptions.Env to escape in a returned error.
+func redactSecrets(text string, overrides map[string]string) string {
+	for key, value := range overrides {
+		if value != "" && (strings.Contains(strings.ToLower(key), "key") ||
+			strings.Contains(strings.ToLower(key), "token") ||
+			strings.Contains(strings.ToLower(key), "secret")) {
+			text = strings.ReplaceAll(text, value, "[REDACTED]")
+		}
+	}
+	return text
 }
 
 func selectBinary(explicit string) string {

@@ -35,29 +35,36 @@ type Session struct {
 }
 
 func (c *Client) CreateSession(ctx context.Context, options CreateSessionOptions) (Session, error) {
+	c.emit(Observation{Kind: "create_session_start", Request: "create_session"})
 	req, err := protocol.NewRawRequest("create_session", struct {
 		WorkingDir string `json:"working_dir,omitempty"`
 	}{options.WorkingDir})
 	if err != nil {
+		c.emit(Observation{Kind: "create_session_error", Request: "create_session", Error: "request_encode"})
 		return Session{}, err
 	}
 	frame, err := c.Request(ctx, req)
 	if err != nil {
+		c.emit(Observation{Kind: "create_session_error", Request: "create_session", Error: "request_failed"})
 		return Session{}, err
 	}
 	if value, ok := frame.Event.(protocol.Error); ok {
+		c.emit(Observation{Kind: "create_session_error", Request: "create_session", Error: value.Code})
 		return Session{}, fmt.Errorf("%s: %s", value.Code, value.Message)
 	}
 	fields, ok := protocol.FieldsJSON(frame.Event)
 	if !ok {
+		c.emit(Observation{Kind: "create_session_error", Request: "create_session", Error: "unexpected_reply"})
 		return Session{}, fmt.Errorf("unexpected create_session reply: %s", eventKind(frame.Event))
 	}
 	var response struct {
 		Session SessionInfo `json:"session"`
 	}
 	if err := json.Unmarshal(fields, &response); err != nil {
+		c.emit(Observation{Kind: "create_session_error", Request: "create_session", Error: "invalid_reply"})
 		return Session{}, err
 	}
+	c.emit(Observation{Kind: "create_session_ok", Request: "create_session"})
 	return Session{client: c, Info: response.Session, ID: response.Session.ID}, nil
 }
 
@@ -86,6 +93,9 @@ func (c *Client) AttachSession(ctx context.Context, id string) (Session, error) 
 }
 
 func (s Session) Send(ctx context.Context, content string, options SendOptions) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	images := make([][2]string, len(options.Images))
 	copy(images, options.Images)
 	req, err := protocol.NewRawRequest("send_message", struct {
@@ -97,14 +107,31 @@ func (s Session) Send(ctx context.Context, content string, options SendOptions) 
 	if err != nil {
 		return err
 	}
-	frame, err := s.client.Request(ctx, req)
-	if err != nil {
+	if options.NoReply {
+		return s.client.Notify(req)
+	}
+
+	// Subscribe before writing so a fast server cannot emit message_accepted
+	// between the notification and subscription setup.
+	sub := s.client.Subscribe(s.ID)
+	defer sub.Close()
+	if err := s.client.Notify(req); err != nil {
 		return err
 	}
-	if value, ok := frame.Event.(protocol.Error); ok {
-		return fmt.Errorf("%s: %s", value.Code, value.Message)
+	for {
+		event, err := sub.Next(ctx)
+		if err != nil {
+			return err
+		}
+		if event.Kind == "message_accepted" {
+			return nil
+		}
+		if event.Kind == "error" {
+			if value, ok := event.Frame.Event.(protocol.Error); ok {
+				return fmt.Errorf("%s: %s", value.Code, value.Message)
+			}
+		}
 	}
-	return nil
 }
 
 func (s Session) Events(ctx context.Context) *TypedEventStream {
