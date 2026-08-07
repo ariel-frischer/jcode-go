@@ -47,12 +47,12 @@ func TestTypedSessionAndEventSurface(t *testing.T) {
 			serverDone <- err
 			return
 		}
-		send, err := receive()
+		_, err = receive()
 		if err != nil {
 			serverDone <- err
 			return
 		}
-		if err := server.Send(mustServerFrame(t, send.ID, "ok", nil)); err != nil {
+		if err := server.Send(mustEventFrame(t, "message_accepted", map[string]any{"session_id": "session_test"})); err != nil {
 			serverDone <- err
 			return
 		}
@@ -81,9 +81,15 @@ func TestTypedSessionAndEventSurface(t *testing.T) {
 	if err := session.Send(ctx, "hello", SendOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	event, err := stream.Next(ctx)
-	if err != nil {
-		t.Fatal(err)
+	var event TypedEvent
+	for {
+		event, err = stream.Next(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := event.(UnknownEvent); !ok {
+			break
+		}
 	}
 	text, ok := event.(*TextDelta)
 	if !ok || text.Text != "hello" || text.SessionID != session.ID {

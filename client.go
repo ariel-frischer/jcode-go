@@ -323,6 +323,32 @@ func (c *Client) Request(ctx context.Context, req protocol.RawRequest) (protocol
 	return c.request(ctx, req)
 }
 
+// Notify writes a request without waiting for a correlated request-level reply.
+// Use this for protocol operations whose result is delivered as an event.
+func (c *Client) Notify(req protocol.RawRequest) error {
+	if c.State() != StateConnected {
+		return c.requestStateError()
+	}
+	select {
+	case <-c.closed:
+		return ErrClosed
+	default:
+	}
+	id := c.nextID.Add(1)
+	frame := protocol.ClientFrame{V: protocol.APIVersionMajor, ID: id, Request: req}
+	c.writeMu.Lock()
+	c.transportMu.RLock()
+	encoder := c.encoder
+	c.transportMu.RUnlock()
+	err := encoder.Write(frame)
+	c.writeMu.Unlock()
+	c.emit(Observation{Kind: "request", Request: req.Req})
+	if err != nil {
+		c.disconnect(err, false)
+	}
+	return err
+}
+
 // Supports reports whether the server advertised capability.
 func (c *Client) Supports(capability string) bool {
 	c.capMu.RLock()

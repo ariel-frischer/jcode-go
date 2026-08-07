@@ -118,7 +118,7 @@ for {
 }
 ```
 
-`AttachSession` creates the same lightweight typed view for an existing ID. `Session.Send` does not retry because a timeout can leave a mutation with an unknown server-side outcome.
+`AttachSession` creates the same lightweight typed view for an existing ID. `Session.Send` subscribes before notifying the server and waits for the asynchronous `message_accepted` event. `SendOptions.NoReply` selects fire-and-forget notification semantics. `Session.Send` does not retry because a timeout can leave a mutation with an unknown server-side outcome.
 
 
 ```go
@@ -287,7 +287,7 @@ An exec integration commonly starts `jcode`, writes prompts to stdin, parses ter
 | Exec integration | Go SDK replacement |
 | --- | --- |
 | `exec.Command` plus shell/terminal parsing | Start `jcode api-bridge` or a private process, dial its API socket, call `NewClient`. |
-| Prompt text on stdin | `protocol.NewRawRequest("send_message", fields)` plus `Client.Request`. |
+| Prompt text on stdin | `Session.Send`, or `protocol.NewRawRequest("send_message", fields)` plus `Client.Notify`. |
 | Scraping stdout for tokens | `Subscribe` and decode `text_delta`, `tool_*`, `permission_request`, and `turn_done`. |
 | Killing the child for cancellation | Send protocol `cancel`, then close the client/process during shutdown. |
 | Assuming process exit means success | Inspect correlated `protocol.Error`, `turn_done`, and transcript/history. |

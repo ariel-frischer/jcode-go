@@ -86,6 +86,9 @@ func (c *Client) AttachSession(ctx context.Context, id string) (Session, error) 
 }
 
 func (s Session) Send(ctx context.Context, content string, options SendOptions) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	images := make([][2]string, len(options.Images))
 	copy(images, options.Images)
 	req, err := protocol.NewRawRequest("send_message", struct {
@@ -97,14 +100,31 @@ func (s Session) Send(ctx context.Context, content string, options SendOptions) 
 	if err != nil {
 		return err
 	}
-	frame, err := s.client.Request(ctx, req)
-	if err != nil {
+	if options.NoReply {
+		return s.client.Notify(req)
+	}
+
+	// Subscribe before writing so a fast server cannot emit message_accepted
+	// between the notification and subscription setup.
+	sub := s.client.Subscribe(s.ID)
+	defer sub.Close()
+	if err := s.client.Notify(req); err != nil {
 		return err
 	}
-	if value, ok := frame.Event.(protocol.Error); ok {
-		return fmt.Errorf("%s: %s", value.Code, value.Message)
+	for {
+		event, err := sub.Next(ctx)
+		if err != nil {
+			return err
+		}
+		if event.Kind == "message_accepted" {
+			return nil
+		}
+		if event.Kind == "error" {
+			if value, ok := event.Frame.Event.(protocol.Error); ok {
+				return fmt.Errorf("%s: %s", value.Code, value.Message)
+			}
+		}
 	}
-	return nil
 }
 
 func (s Session) Events(ctx context.Context) *TypedEventStream {
