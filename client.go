@@ -64,9 +64,12 @@ type Options struct {
 	MaxFrameSize  int
 	EventBuffer   int
 	RequestBuffer int
-	SessionID     string
-	Reconnect     ReconnectPolicy
-	Observer      Observer
+	// RequestTimeout bounds each request when the caller's context has no
+	// earlier deadline. Non-positive values use the 30-second default.
+	RequestTimeout time.Duration
+	SessionID      string
+	Reconnect      ReconnectPolicy
+	Observer       Observer
 }
 
 func (o Options) withDefaults() Options {
@@ -78,6 +81,9 @@ func (o Options) withDefaults() Options {
 	}
 	if o.RequestBuffer <= 0 {
 		o.RequestBuffer = 1
+	}
+	if o.RequestTimeout <= 0 {
+		o.RequestTimeout = 30 * time.Second
 	}
 	if o.Reconnect.MaxAttempts <= 0 {
 		o.Reconnect.MaxAttempts = 1
@@ -268,6 +274,8 @@ func (c *Client) request(ctx context.Context, req protocol.RawRequest, internal 
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	requestCtx, cancel := context.WithTimeout(ctx, c.options.RequestTimeout)
+	defer cancel()
 	allowConnecting := len(internal) > 0 && internal[0]
 	if !allowConnecting && c.State() != StateConnected {
 		return protocol.ServerFrame{}, c.requestStateError()
@@ -301,9 +309,9 @@ func (c *Client) request(ctx context.Context, req protocol.RawRequest, internal 
 			return protocol.ServerFrame{}, ErrDisconnected
 		}
 		return result, nil
-	case <-ctx.Done():
+	case <-requestCtx.Done():
 		c.removePending(id)
-		return protocol.ServerFrame{}, ctx.Err()
+		return protocol.ServerFrame{}, requestCtx.Err()
 	case <-c.closed:
 		c.removePending(id)
 		return protocol.ServerFrame{}, ErrClosed

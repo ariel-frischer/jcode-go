@@ -75,6 +75,70 @@ func TestClientCorrelatesReplyAndPublishesEvents(t *testing.T) {
 	_ = id
 }
 
+func TestCreateSessionTimesOutWhenBridgeNeverReplies(t *testing.T) {
+	clientSide, serverSide := transport.NewPipePair()
+	server := transport.NewFakeServer(serverSide)
+	defer server.Close()
+
+	serverDone := make(chan error, 1)
+	go func() {
+		for requestNumber := 0; requestNumber < 2; requestNumber++ {
+			data, err := server.Receive()
+			if err != nil {
+				serverDone <- err
+				return
+			}
+			var request protocol.ClientFrame
+			if err := json.Unmarshal(data, &request); err != nil {
+				serverDone <- err
+				return
+			}
+			if requestNumber == 0 {
+				hello, err := protocol.EncodeServerFrame(1, &request.ID, "hello_ok", map[string]any{"version": 1})
+				if err != nil {
+					serverDone <- err
+					return
+				}
+				if err := server.Send(hello); err != nil {
+					serverDone <- err
+					return
+				}
+				continue
+			}
+			var wire struct {
+				Req string `json:"req"`
+			}
+			if err := json.Unmarshal(data, &wire); err != nil {
+				serverDone <- err
+				return
+			}
+			if wire.Req != "create_session" {
+				serverDone <- errors.New("unexpected request in create_session test: " + wire.Req)
+				return
+			}
+		}
+		serverDone <- nil
+	}()
+
+	client, err := NewClient(context.Background(), clientSide, Options{RequestTimeout: 20 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	defer client.Close()
+
+	started := time.Now()
+	_, err = client.CreateSession(context.Background(), CreateSessionOptions{})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("CreateSession error=%v, want context deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("CreateSession took %s, want bounded timeout", elapsed)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSubscriptionOverflowTerminatesOnlySubscriber(t *testing.T) {
 	clientSide, serverSide := transport.NewPipePair()
 	server := transport.NewFakeServer(serverSide)
