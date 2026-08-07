@@ -240,6 +240,8 @@ defer client.Close()
 
 `Launch` defaults to a temporary owner-only home and removes it on shutdown. Set `JcodeHome` to persist sessions. `LaunchInstance` starts the isolated process without dialing it, and its `SocketPath()` can be passed to `net.Dial("unix", ...)` and `NewClient`. Set `InheritLogins` to a bool pointer whose value is false to avoid copying/linking the user's recognized login files.
 
+When `InheritLogins` is false, provide provider credentials explicitly through `LaunchOptions.Env`, for example `OPENROUTER_API_KEY`. Explicit environment entries replace same-named ambient variables, so API-key-only authentication is deterministic rather than dependent on duplicate environment-key behavior. Startup diagnostics redact explicit values for keys, tokens, and secrets. Never print or persist the credential value yourself, and use per-request context deadlines for `Session.Send`.
+
 
 The private example uses the lower-level process/sockets pattern intentionally, which is useful when a service must supervise the child itself. For most applications, prefer `jcode.Launch` so the SDK owns startup and cleanup. Verify bridge flags for the jcode version you ship before enabling custom supervision. If a private process must use credentials, provision a dedicated service identity instead of inheriting a developer's login files.
 
