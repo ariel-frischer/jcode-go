@@ -35,29 +35,36 @@ type Session struct {
 }
 
 func (c *Client) CreateSession(ctx context.Context, options CreateSessionOptions) (Session, error) {
+	c.emit(Observation{Kind: "create_session_start", Request: "create_session"})
 	req, err := protocol.NewRawRequest("create_session", struct {
 		WorkingDir string `json:"working_dir,omitempty"`
 	}{options.WorkingDir})
 	if err != nil {
+		c.emit(Observation{Kind: "create_session_error", Request: "create_session", Error: "request_encode"})
 		return Session{}, err
 	}
 	frame, err := c.Request(ctx, req)
 	if err != nil {
+		c.emit(Observation{Kind: "create_session_error", Request: "create_session", Error: "request_failed"})
 		return Session{}, err
 	}
 	if value, ok := frame.Event.(protocol.Error); ok {
+		c.emit(Observation{Kind: "create_session_error", Request: "create_session", Error: value.Code})
 		return Session{}, fmt.Errorf("%s: %s", value.Code, value.Message)
 	}
 	fields, ok := protocol.FieldsJSON(frame.Event)
 	if !ok {
+		c.emit(Observation{Kind: "create_session_error", Request: "create_session", Error: "unexpected_reply"})
 		return Session{}, fmt.Errorf("unexpected create_session reply: %s", eventKind(frame.Event))
 	}
 	var response struct {
 		Session SessionInfo `json:"session"`
 	}
 	if err := json.Unmarshal(fields, &response); err != nil {
+		c.emit(Observation{Kind: "create_session_error", Request: "create_session", Error: "invalid_reply"})
 		return Session{}, err
 	}
+	c.emit(Observation{Kind: "create_session_ok", Request: "create_session"})
 	return Session{client: c, Info: response.Session, ID: response.Session.ID}, nil
 }
 

@@ -10,6 +10,14 @@ import (
 	"github.com/ariel-frischer/jcode-go/transport"
 )
 
+type observationRecorder struct {
+	observations []Observation
+}
+
+func (r *observationRecorder) Observe(observation Observation) {
+	r.observations = append(r.observations, observation)
+}
+
 func TestTypedSessionAndEventSurface(t *testing.T) {
 	clientSide, serverSide := transport.NewPipePair()
 	server := transport.NewFakeServer(serverSide)
@@ -65,7 +73,8 @@ func TestTypedSessionAndEventSurface(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	client, err := NewClient(ctx, clientSide, Options{})
+	recorder := &observationRecorder{}
+	client, err := NewClient(ctx, clientSide, Options{Observer: recorder})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,6 +85,9 @@ func TestTypedSessionAndEventSurface(t *testing.T) {
 	}
 	if session.ID != "session_test" || session.Info.WorkingDir != "/tmp" {
 		t.Fatalf("session=%+v", session)
+	}
+	if len(recorder.observations) == 0 || recorder.observations[len(recorder.observations)-1].Kind != "create_session_ok" {
+		t.Fatalf("observations=%+v, want create_session_ok", recorder.observations)
 	}
 	stream := session.Events(ctx)
 	if err := session.Send(ctx, "hello", SendOptions{}); err != nil {

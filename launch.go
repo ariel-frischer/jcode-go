@@ -74,6 +74,10 @@ type LaunchOptions struct {
 	InheritStderr  bool
 	// ClientOptions controls the protocol client created by Launch.
 	ClientOptions Options
+	// Observer receives redacted startup lifecycle metadata. If set, it is also
+	// used by the protocol client created by Launch unless ClientOptions.Observer
+	// is explicitly provided.
+	Observer Observer
 }
 
 func (o LaunchOptions) withDefaults() LaunchOptions {
@@ -132,22 +136,49 @@ func (i *launchedInstance) Shutdown() error {
 // Launch starts a private bridge and connects a Client to it. Any failure
 // after the process starts performs best-effort teardown before returning.
 func Launch(ctx context.Context, options LaunchOptions) (*Client, error) {
+	observer := options.Observer
+	if observer == nil {
+		observer = options.ClientOptions.Observer
+	}
+	emitLaunchObservation(observer, Observation{Kind: "launch_start"})
 	instance, err := launchInstance(options)
 	if err != nil {
+		emitLaunchObservation(observer, Observation{Kind: "launch_error", Error: string(launchErrorCode(err))})
 		return nil, err
 	}
+	emitLaunchObservation(observer, Observation{Kind: "launch_ready"})
 	tr, err := dialUnix(ctx, instance.SocketPath())
 	if err != nil {
 		_ = instance.Shutdown()
+		emitLaunchObservation(observer, Observation{Kind: "launch_error", Error: string(LaunchTransportFailed)})
 		return nil, &LaunchError{Code: LaunchTransportFailed, Err: err}
 	}
-	client, err := NewClient(ctx, tr, options.ClientOptions)
+	clientOptions := options.ClientOptions
+	if clientOptions.Observer == nil {
+		clientOptions.Observer = observer
+	}
+	client, err := NewClient(ctx, tr, clientOptions)
 	if err != nil {
 		_ = instance.Shutdown()
+		emitLaunchObservation(observer, Observation{Kind: "launch_error", Error: string(LaunchHandshakeFailed)})
 		return nil, &LaunchError{Code: LaunchHandshakeFailed, Err: err}
 	}
 	client.setInstance(instance)
 	return client, nil
+}
+
+func launchErrorCode(err error) LaunchErrorCode {
+	var launchErr *LaunchError
+	if errors.As(err, &launchErr) {
+		return launchErr.Code
+	}
+	return LaunchStartupFailed
+}
+
+func emitLaunchObservation(observer Observer, observation Observation) {
+	if observer != nil {
+		observer.Observe(observation)
+	}
 }
 
 // LaunchInstance starts an isolated bridge without connecting the protocol
