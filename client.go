@@ -47,7 +47,10 @@ type Observation struct {
 }
 
 // Observer receives redacted lifecycle metadata. Implementations must be safe
-// for concurrent calls and should return quickly.
+// for concurrent calls and should return quickly. Request lifecycle events are
+// emitted as request_write_start, request_write_complete, request_reply, or
+// request_timeout, so a missing phase identifies the stalled boundary without
+// exposing payloads, credentials, or identifiers.
 type Observer interface{ Observe(Observation) }
 
 type ReconnectPolicy struct {
@@ -295,8 +298,16 @@ func (c *Client) request(ctx context.Context, req protocol.RawRequest, internal 
 	c.transportMu.RLock()
 	encoder := c.encoder
 	c.transportMu.RUnlock()
+	c.emit(Observation{Kind: "request_write_start", Request: req.Req})
 	err := encoder.Write(frame)
 	c.writeMu.Unlock()
+	// A missing write_complete points at a blocked transport write. A later
+	// request_timeout proves the frame was sent but never answered.
+	if err == nil {
+		c.emit(Observation{Kind: "request_write_complete", Request: req.Req})
+	} else {
+		c.emit(Observation{Kind: "request_write_error", Request: req.Req, Error: errorKind(err)})
+	}
 	c.emit(Observation{Kind: "request", Request: req.Req})
 	if err != nil {
 		c.removePending(id)
@@ -306,15 +317,30 @@ func (c *Client) request(ctx context.Context, req protocol.RawRequest, internal 
 	select {
 	case result, ok := <-reply:
 		if !ok {
+			c.emit(Observation{Kind: "request_error", Request: req.Req, Error: "disconnected"})
 			return protocol.ServerFrame{}, ErrDisconnected
 		}
+		c.emit(Observation{Kind: "request_reply", Request: req.Req})
 		return result, nil
 	case <-requestCtx.Done():
 		c.removePending(id)
+		c.emit(Observation{Kind: "request_timeout", Request: req.Req, Error: requestContextError(requestCtx.Err())})
 		return protocol.ServerFrame{}, requestCtx.Err()
 	case <-c.closed:
 		c.removePending(id)
+		c.emit(Observation{Kind: "request_error", Request: req.Req, Error: "closed"})
 		return protocol.ServerFrame{}, ErrClosed
+	}
+}
+
+func requestContextError(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline_exceeded"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	default:
+		return "context_done"
 	}
 }
 

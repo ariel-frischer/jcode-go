@@ -120,7 +120,11 @@ func TestCreateSessionTimesOutWhenBridgeNeverReplies(t *testing.T) {
 		serverDone <- nil
 	}()
 
-	client, err := NewClient(context.Background(), clientSide, Options{RequestTimeout: 20 * time.Millisecond})
+	recorder := &observationRecorder{}
+	client, err := NewClient(context.Background(), clientSide, Options{
+		RequestTimeout: 20 * time.Millisecond,
+		Observer:       recorder,
+	})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -133,6 +137,23 @@ func TestCreateSessionTimesOutWhenBridgeNeverReplies(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed > time.Second {
 		t.Fatalf("CreateSession took %s, want bounded timeout", elapsed)
+	}
+	want := []Observation{
+		{Kind: "create_session_start", Request: "create_session"},
+		{Kind: "request_write_start", Request: "create_session"},
+		{Kind: "request_write_complete", Request: "create_session"},
+		{Kind: "request", Request: "create_session"},
+		{Kind: "request_timeout", Request: "create_session", Error: "deadline_exceeded"},
+		{Kind: "create_session_error", Request: "create_session", Error: "request_timeout"},
+	}
+	if len(recorder.observations) < len(want) {
+		t.Fatalf("observations=%+v, want suffix=%+v", recorder.observations, want)
+	}
+	got := recorder.observations[len(recorder.observations)-len(want):]
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("observations suffix=%+v, want=%+v", got, want)
+		}
 	}
 	if err := <-serverDone; err != nil {
 		t.Fatal(err)
@@ -165,7 +186,10 @@ func TestSubscriptionOverflowTerminatesOnlySubscriber(t *testing.T) {
 	}
 	defer client.Close()
 	sub := client.Subscribe("")
-	for i := 0; i < 2; i++ {
+	// Two frames can be observed by the transport before the read loop has
+	// dispatched the first one. A third frame guarantees that the subscriber
+	// remains full long enough for the overflow path to run under -race too.
+	for i := 0; i < 3; i++ {
 		text, err := protocol.EncodeServerFrame(1, nil, "text_delta", map[string]any{})
 		if err != nil {
 			t.Fatal(err)

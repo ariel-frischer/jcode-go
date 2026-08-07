@@ -141,7 +141,7 @@ func Launch(ctx context.Context, options LaunchOptions) (*Client, error) {
 		observer = options.ClientOptions.Observer
 	}
 	emitLaunchObservation(observer, Observation{Kind: "launch_start"})
-	instance, err := launchInstance(options)
+	instance, err := launchInstanceWithObserver(options, observer)
 	if err != nil {
 		emitLaunchObservation(observer, Observation{Kind: "launch_error", Error: string(launchErrorCode(err))})
 		return nil, err
@@ -188,7 +188,12 @@ func LaunchInstance(options LaunchOptions) (Instance, error) {
 }
 
 func launchInstance(options LaunchOptions) (Instance, error) {
+	return launchInstanceWithObserver(options, nil)
+}
+
+func launchInstanceWithObserver(options LaunchOptions, observer Observer) (Instance, error) {
 	o := options.withDefaults()
+	emitLaunchObservation(observer, Observation{Kind: "launch_prepare"})
 	ephemeral := o.JcodeHome == ""
 	home := o.JcodeHome
 	if ephemeral {
@@ -251,6 +256,7 @@ func launchInstance(options LaunchOptions) (Instance, error) {
 		}
 		return nil, &LaunchError{Code: code, Binary: binary, Err: err}
 	}
+	emitLaunchObservation(observer, Observation{Kind: "launch_process_started"})
 	stderrDone := make(chan string, 1)
 	if stderr != nil {
 		go func() { stderrDone <- readTail(stderr, 4000) }()
@@ -259,9 +265,11 @@ func launchInstance(options LaunchOptions) (Instance, error) {
 	}
 	waitDone := make(chan error, 1)
 	go func() { waitDone <- cmd.Wait() }()
+	emitLaunchObservation(observer, Observation{Kind: "launch_wait_socket"})
 	deadline := time.Now().Add(o.StartupTimeout)
 	for time.Now().Before(deadline) {
 		if socketAccepts(socketPath) {
+			emitLaunchObservation(observer, Observation{Kind: "launch_socket_ready"})
 			return &launchedInstance{socketPath: socketPath, jcodeHome: home, runtimeDir: runtimeDir,
 				ephemeral: ephemeral, cleanupTimeout: o.CleanupTimeout, cmd: cmd, waitDone: waitDone}, nil
 		}
@@ -269,6 +277,7 @@ func launchInstance(options LaunchOptions) (Instance, error) {
 		case waitErr := <-waitDone:
 			stderrText := <-stderrDone
 			cleanupOnError()
+			emitLaunchObservation(observer, Observation{Kind: "launch_process_error", Error: string(LaunchStartupFailed)})
 			return nil, &LaunchError{Code: LaunchStartupFailed, Binary: binary, Stderr: redactSecrets(stderrText, o.Env), Err: waitErr}
 		default:
 		}
@@ -277,6 +286,7 @@ func launchInstance(options LaunchOptions) (Instance, error) {
 	terminateProcess(cmd, waitDone)
 	stderrText := <-stderrDone
 	cleanupOnError()
+	emitLaunchObservation(observer, Observation{Kind: "launch_socket_timeout", Error: string(LaunchStartupTimeout)})
 	return nil, &LaunchError{Code: LaunchStartupTimeout, Binary: binary, Stderr: redactSecrets(stderrText, o.Env),
 		Err: fmt.Errorf("no API socket at %s within %s", socketPath, o.StartupTimeout)}
 }

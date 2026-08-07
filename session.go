@@ -3,6 +3,7 @@ package jcode
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/ariel-frischer/jcode-go/protocol"
@@ -45,7 +46,13 @@ func (c *Client) CreateSession(ctx context.Context, options CreateSessionOptions
 	}
 	frame, err := c.Request(ctx, req)
 	if err != nil {
-		c.emit(Observation{Kind: "create_session_error", Request: "create_session", Error: "request_failed"})
+		errorCode := "request_failed"
+		if errors.Is(err, context.DeadlineExceeded) {
+			errorCode = "request_timeout"
+		} else if errors.Is(err, context.Canceled) {
+			errorCode = "request_canceled"
+		}
+		c.emit(Observation{Kind: "create_session_error", Request: "create_session", Error: errorCode})
 		return Session{}, err
 	}
 	if value, ok := frame.Event.(protocol.Error); ok {
