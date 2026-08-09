@@ -29,6 +29,24 @@ type SendOptions struct {
 	NoReply bool
 }
 
+// EventError reports a terminal error emitted by the harness for a session
+// turn. It preserves the protocol code and message for callers that need to
+// classify provider failures without inspecting raw protocol frames.
+type EventError struct {
+	Code    string
+	Message string
+}
+
+func (e EventError) Error() string {
+	if e.Code == "" {
+		return e.Message
+	}
+	if e.Message == "" {
+		return e.Code
+	}
+	return fmt.Sprintf("%s: %s", e.Code, e.Message)
+}
+
 type Session struct {
 	client *Client
 	Info   SessionInfo
@@ -153,6 +171,9 @@ func (s *TypedEventStream) Next(ctx context.Context) (TypedEvent, error) {
 	event, err := s.subscription.Next(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if value, ok := event.Frame.Event.(protocol.Error); ok {
+		return nil, EventError{Code: value.Code, Message: value.Message}
 	}
 	return decodeTypedEvent(event)
 }
