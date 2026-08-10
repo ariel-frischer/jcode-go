@@ -31,10 +31,22 @@ func terminateProcess(
 	reapTimeout time.Duration,
 	forceKill <-chan struct{},
 ) (bool, error) {
+	return terminateProcessObserved(nil, processGroupID, waitDone, grace, reapTimeout, forceKill, nil)
+}
+
+func terminateProcessObserved(
+	_ *exec.Cmd,
+	processGroupID int,
+	waitDone <-chan error,
+	grace time.Duration,
+	reapTimeout time.Duration,
+	forceKill <-chan struct{},
+	observe func(string),
+) (bool, error) {
 	return terminateProcessGroup(processGroupID, waitDone, grace, reapTimeout, forceKill, processGroupOperations{
 		signal: signalProcessGroup,
 		alive:  processGroupAlive,
-	})
+	}, observe)
 }
 
 type processGroupOperations struct {
@@ -49,7 +61,17 @@ func terminateProcessGroup(
 	reapTimeout time.Duration,
 	forceKill <-chan struct{},
 	operations processGroupOperations,
+	observers ...func(string),
 ) (bool, error) {
+	var observe func(string)
+	if len(observers) > 0 {
+		observe = observers[0]
+	}
+	emit := func(kind string) {
+		if observe != nil {
+			observe(kind)
+		}
+	}
 	if processGroupID <= 1 {
 		return false, fmt.Errorf("invalid owned process group %d", processGroupID)
 	}
@@ -57,6 +79,7 @@ func terminateProcessGroup(
 	reapTimeout = finiteDuration(reapTimeout, defaultShutdownReapTimeout)
 	select {
 	case <-waitDone:
+		emit("shutdown_reap_complete")
 		return false, nil
 	default:
 	}
@@ -65,6 +88,7 @@ func terminateProcessGroup(
 	if err := operations.signal(processGroupID, syscall.SIGTERM); err != nil {
 		errs = append(errs, fmt.Errorf("signal owned process group %d with SIGTERM: %w", processGroupID, err))
 	}
+	emit("shutdown_grace_start")
 
 	waitReceived := false
 	contextTriggered := false
@@ -82,11 +106,14 @@ func terminateProcessGroup(
 		default:
 		}
 	}
+	emit("shutdown_grace_complete")
 	if waitReceived {
+		emit("shutdown_reap_complete")
 		return contextTriggered, errors.Join(errs...)
 	}
 	select {
 	case <-waitDone:
+		emit("shutdown_reap_complete")
 		return contextTriggered, errors.Join(errs...)
 	default:
 	}
@@ -99,14 +126,17 @@ func terminateProcessGroup(
 		if err := waitForProcessReap(processGroupID, waitDone, reapTimeout); err != nil {
 			errs = append(errs, err)
 		}
+		emit("shutdown_reap_complete")
 		return contextTriggered, errors.Join(errs...)
 	}
 
 	select {
 	case <-waitDone:
+		emit("shutdown_reap_complete")
 		return contextTriggered, errors.Join(errs...)
 	default:
 	}
+	emit("shutdown_force_kill")
 	if err := operations.signal(processGroupID, syscall.SIGKILL); err != nil {
 		errs = append(errs, fmt.Errorf("signal owned process group %d with SIGKILL: %w", processGroupID, err))
 	}
@@ -114,6 +144,7 @@ func terminateProcessGroup(
 	if err := waitForProcessReap(processGroupID, waitDone, reapTimeout); err != nil {
 		errs = append(errs, err)
 	}
+	emit("shutdown_reap_complete")
 	return contextTriggered, errors.Join(errs...)
 }
 

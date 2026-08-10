@@ -43,12 +43,19 @@ When a worker connection must be allowed to close while the private session
 continues, transfer the private ownership explicitly:
 
 ```go
-client, err := jcode.Launch(ctx, jcode.LaunchOptions{JcodeHome: home})
+client, err := jcode.Launch(ctx, jcode.LaunchOptions{
+    JcodeHome:  home,
+    WorkingDir: workingDir,
+})
 if err != nil { return err }
 owner, ok := client.DetachInstance()
 if !ok { return errors.New("launch did not return an owned instance") }
 _ = client.Close() // transport only; the safe-run owner remains alive
-defer owner.Shutdown() // explicit owner shutdown stops the private runtime
+defer func() {
+    shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 15*time.Second)
+    defer cancelShutdown()
+    _ = jcode.ShutdownInstance(shutdownCtx, owner) // explicit owner performs bounded cleanup
+}()
 ```
 
 This is intentionally opt-in. It does not make arbitrary clients immortal or
@@ -77,26 +84,28 @@ go run ./examples/oneshot "List the top-level files"
 
 The example dials `$JCODE_API_SOCKET` when set, otherwise `$XDG_RUNTIME_DIR/jcode-api.sock`, creates a session, sends one message, prints text deltas, and exits at `turn_done`.
 
-The important lifecycle is:
+The important shared-connection lifecycle is still explicitly closed, while the
+turn owns acceptance, ordered events, server cancellation, and terminal outcome:
 
 ```go
 ctx := context.Background()
 conn, err := net.Dial("unix", socketPath)
 if err != nil { return err }
-client, err := jcode.NewClient(ctx, conn, jcode.Options{
-    ClientName: "my-tool/1.0",
-})
+client, err := jcode.NewClient(ctx, conn, jcode.Options{ClientName: "my-tool/1.0"})
 if err != nil { return err } // NewClient closes conn after handshake failure
-sub := client.Subscribe(sessionID)
-defer sub.Close()
 defer client.Close()
+session, err := client.CreateSession(ctx, jcode.CreateSessionOptions{WorkingDir: workingDir})
+if err != nil { return err }
+turn, err := session.StartTurn(lifecycleCtx, prompt, jcode.SendOptions{})
+if err != nil { return err }
 ```
 
 `NewClient` starts its reader goroutine and performs a protocol v1 handshake. `Client.Close` is idempotent and wakes pending requests and subscriptions.
 
 ## Typed session lifecycle
 
-Use typed helpers for the common create/send/stream flow:
+The existing `Session.Send` and `Session.Events` APIs remain compatible for
+callers that separately manage acceptance and event consumption:
 
 ```go
 session, err := client.CreateSession(ctx, jcode.CreateSessionOptions{WorkingDir: workingDir})
@@ -167,6 +176,11 @@ not send protocol `cancel`. Contexts passed to `Accepted`, `Next`, `Cancel`, and
 request, and a successful acknowledgement remains non-terminal until the server
 emits its terminal event. The first terminal signal is stored immutably, so all
 later `Wait` calls return the same `TurnResult`.
+
+In particular, canceling a `Wait` context is local. It does not stop server work.
+Call `Turn.Cancel` for server-side cancellation, then use a fresh bounded context
+for `Turn.Wait` so the interrupted context does not immediately abort the
+terminal wait.
 
 
 ```go
@@ -313,6 +327,11 @@ client, err := jcode.Launch(ctx, jcode.LaunchOptions{
 })
 if err != nil { return err }
 defer client.Close()
+
+session, err := client.CreateSession(ctx, jcode.CreateSessionOptions{
+    WorkingDir: workingDir, // same explicit absolute worktree as LaunchOptions
+})
+if err != nil { return err }
 ```
 
 `Launch` defaults to a temporary owner-only home and removes it on shutdown. Set `JcodeHome` to persist sessions. `LaunchInstance` starts the isolated process without dialing it, and its `SocketPath()` can be passed to `net.Dial("unix", ...)` and `NewClient`. `Provider` and `Model` become explicit global selections for the private jcode process; leave either empty to preserve jcode's normal auto/config resolution. Set `InheritLogins` to a bool pointer whose value is false to avoid copying/linking the user's recognized login files.
@@ -320,7 +339,39 @@ defer client.Close()
 When `InheritLogins` is false, provide provider credentials explicitly through `LaunchOptions.Env`, for example `OPENROUTER_API_KEY`. Explicit environment entries replace same-named ambient variables, so API-key-only authentication is deterministic rather than dependent on duplicate environment-key behavior. Startup diagnostics redact explicit values for keys, tokens, and secrets. Never print or persist the credential value yourself, and use per-request context deadlines for `Session.Send`.
 
 
-The private example uses the lower-level process/sockets pattern intentionally, which is useful when a service must supervise the child itself. For most applications, prefer `jcode.Launch` so the SDK owns startup and cleanup. Verify bridge flags for the jcode version you ship before enabling custom supervision. If a private process must use credentials, provision a dedicated service identity instead of inheriting a developer's login files.
+[`examples/private`](examples/private) uses `jcode.Launch`, the same explicit
+absolute cwd for launch and session creation, `DetachInstance`, `Client.Close`,
+and context-bounded `ShutdownInstance`. `Instance.Shutdown` and `Instance.Close`
+use finite defaults; the additive helper lets a caller shorten the cooperative
+grace period without skipping forced termination, bounded reap, or owned-path
+cleanup. If a private process must use credentials, provision a dedicated
+service identity instead of inheriting a developer's login files.
+
+## Redacted lifecycle observations
+
+Set `Options.Observer` or `LaunchOptions.Observer` to receive bounded lifecycle
+metadata. The existing `Observer` contract remains synchronous, concurrency-safe
+for callers to implement, and backend-neutral. The SDK does not create a
+telemetry backend or generic event framework.
+
+Lifecycle observations include:
+
+- `launch_start`, launch preparation/process/socket phases, `launch_ready`, and a
+  classified `launch_error`.
+- `connect_start`, `connect_ready`, and classified `connect_error` events in
+  addition to the existing connection `state` observations.
+- `turn_start`, `turn_prompt_accepted`, the single `turn_first_event`, one shared
+  cancellation-request start and result, and exactly one `turn_terminal` whose
+  `Observation.Outcome` is the immutable `TurnResultKind`.
+- `shutdown_start`, TERM grace start/completion, optional
+  `shutdown_force_kill`, bounded reap completion, cleanup completion, and the
+  final shutdown result for SDK-owned Linux private instances.
+
+Observations contain classifications only. They never contain prompts,
+credentials or tokens, response or tool content, raw protocol frames, raw
+session IDs, secret-bearing environment values, or private runtime paths. Keep
+observer implementations equally strict and fast because lifecycle code calls
+them synchronously and may call them concurrently.
 
 ## Security guidance
 
@@ -334,7 +385,10 @@ The private example uses the lower-level process/sockets pattern intentionally, 
 
 ## Platforms and protocol compatibility
 
-The SDK is pure Go and compiles on platforms supported by Go. The transport support matrix is:
+The protocol client is pure Go and compiles on platforms supported by Go. The
+bounded private-process supervision contract in this stability program is
+Linux-only. Windows supervision parity is intentionally out of scope. The
+transport support matrix is:
 
 | Platform | `transport.UnixSocket` | Notes |
 | --- | --- | --- |
@@ -364,10 +418,10 @@ An exec integration commonly starts `jcode`, writes prompts to stdin, parses ter
 | Exec integration | Go SDK replacement |
 | --- | --- |
 | `exec.Command` plus shell/terminal parsing | Start `jcode api-bridge` or a private process, dial its API socket, call `NewClient`. |
-| Prompt text on stdin | `Session.Send`, or `protocol.NewRawRequest("send_message", fields)` plus `Client.Notify`. |
-| Scraping stdout for tokens | `Subscribe` and decode `text_delta`, `tool_*`, `permission_request`, and `turn_done`. |
-| Killing the child for cancellation | Send protocol `cancel`, then close the client/process during shutdown. |
-| Assuming process exit means success | Inspect correlated `protocol.Error`, `turn_done`, and transcript/history. |
+| Prompt text on stdin | `Session.StartTurn`; compatible callers may retain `Session.Send` or raw `Notify`. |
+| Scraping stdout for tokens | `Turn.Next`; compatible callers may retain `Session.Events` or raw `Subscribe`. |
+| Killing the child for cancellation | `Turn.Cancel`, a fresh bounded `Turn.Wait`, then owned instance shutdown. |
+| Assuming process exit means success | Inspect the immutable typed `TurnResult`. |
 | Re-running the whole command after a timeout | Reconnect, refresh history, and retry only operations known to be safe. |
 
 Keep the old exec path as a fallback while validating parity. Do not run both paths against the same live session unless you intentionally want concurrent actors. Once the SDK path is stable, remove shell quoting and terminal scraping, add explicit deadlines and permission policy, and redact protocol diagnostics before logging.
@@ -377,7 +431,6 @@ Keep the old exec path as a fallback while validating parity. Do not run both pa
 The three examples are ordinary Go packages and are checked by:
 
 ```bash
-cd sdk/go
 gofmt -d .
 go test ./...
 go vet ./...

@@ -56,6 +56,8 @@ func TestShutdownProcessGroupEscalatesAfterGrace(t *testing.T) {
 	process := startLinuxHelper(t, "ignore")
 	const grace = 120 * time.Millisecond
 	instance := testProcessInstance(t, process, grace, time.Second)
+	recorder := &safeObservationRecorder{}
+	instance.observer = recorder
 
 	started := time.Now()
 	if err := instance.Shutdown(); err != nil {
@@ -72,6 +74,16 @@ func TestShutdownProcessGroupEscalatesAfterGrace(t *testing.T) {
 		t.Fatalf("TERM marker: %v", err)
 	}
 	assertProcessTerminated(t, process.cmd.Process.Pid)
+	observations := recorder.waitForKind(t, "shutdown_complete")
+	assertObservationSubsequence(t, observations, []Observation{
+		{Kind: "shutdown_start"},
+		{Kind: "shutdown_grace_start"},
+		{Kind: "shutdown_force_kill"},
+		{Kind: "shutdown_reap_complete"},
+		{Kind: "shutdown_cleanup_complete"},
+		{Kind: "shutdown_complete"},
+	})
+	assertObservationsExclude(t, observations, process.termPath, process.childPIDPath)
 }
 
 func TestShutdownKillsTERMInheritingGroupBeforeLeaderReap(t *testing.T) {

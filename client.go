@@ -36,21 +36,23 @@ const (
 	StateClosed       State = "closed"
 )
 
-// Observation contains only metadata. It intentionally excludes request fields,
-// prompts, credentials, server messages, and session identifiers.
+// Observation contains only bounded lifecycle metadata. It intentionally
+// excludes request fields, prompts, credentials and environment values, server
+// response or tool content, raw frames, private paths, and session identifiers.
 type Observation struct {
 	Kind     string
 	State    State
 	Request  string
 	Error    string
 	Attempts int
+	// Outcome is set only for an immutable terminal turn observation.
+	Outcome TurnResultKind
 }
 
 // Observer receives redacted lifecycle metadata. Implementations must be safe
-// for concurrent calls and should return quickly. Request lifecycle events are
-// emitted as request_write_start, request_write_complete, request_reply, or
-// request_timeout, so a missing phase identifies the stalled boundary without
-// exposing payloads, credentials, or identifiers.
+// for concurrent calls and should return quickly. Request events and the launch,
+// connect, owned-turn, and Linux private-instance phases identify a stalled
+// boundary without exposing payloads, credentials, paths, or identifiers.
 type Observer interface{ Observe(Observation) }
 
 type ReconnectPolicy struct {
@@ -285,13 +287,16 @@ func NewClient(ctx context.Context, t transport.Transport, options Options) (*Cl
 		closed: make(chan struct{}),
 	}
 	c.installDecoder(c.transport)
+	c.emit(Observation{Kind: "connect_start"})
 	c.emit(Observation{Kind: "state", State: StateConnecting})
 	go c.readLoop(c.decoder)
 	if err := c.handshake(ctx); err != nil {
+		c.emit(Observation{Kind: "connect_error", Error: "handshake_failed"})
 		c.Close()
 		return nil, err
 	}
 	c.setState(StateConnected)
+	c.emit(Observation{Kind: "connect_ready"})
 	return c, nil
 }
 

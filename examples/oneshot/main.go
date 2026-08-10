@@ -2,20 +2,20 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"time"
 
 	jcode "github.com/ariel-frischer/jcode-go"
-	"github.com/ariel-frischer/jcode-go/protocol"
 )
 
-// Example: connect to the user's bridge, create one session, stream one turn.
-// Run `jcode api-bridge` first. This is a compile-checkable example; its
-// endpoint is intentionally supplied by the environment for portability.
+// Example: connect to the user's bridge, create one session in an explicit
+// working directory, and own one complete turn lifecycle.
 func main() {
 	if err := run(context.Background(), os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -23,7 +23,7 @@ func main() {
 	}
 }
 
-func run(ctx context.Context, args []string) error {
+func run(lifecycleCtx context.Context, args []string) error {
 	socketPath := os.Getenv("JCODE_API_SOCKET")
 	if socketPath == "" {
 		runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
@@ -32,87 +32,72 @@ func run(ctx context.Context, args []string) error {
 		}
 		socketPath = filepath.Join(runtimeDir, "jcode-api.sock")
 	}
+	workingDir, err := filepath.Abs(".")
+	if err != nil {
+		return fmt.Errorf("resolve working directory: %w", err)
+	}
 	conn, err := net.Dial("unix", socketPath)
 	if err != nil {
 		return fmt.Errorf("connect to %s: %w", socketPath, err)
 	}
-	client, err := jcode.NewClient(ctx, conn, jcode.Options{ClientName: "go-oneshot-example/0.1"})
+	client, err := jcode.NewClient(lifecycleCtx, conn, jcode.Options{ClientName: "go-oneshot-example/0.1"})
 	if err != nil {
 		return err
 	}
 	defer client.Close()
 
-	create, err := protocol.NewRawRequest("create_session", map[string]any{"working_dir": mustCWD()})
+	session, err := client.CreateSession(lifecycleCtx, jcode.CreateSessionOptions{WorkingDir: workingDir})
 	if err != nil {
 		return err
 	}
-	frame, err := client.Request(ctx, create)
-	if err != nil {
-		return err
-	}
-	sessionID, err := sessionID(frame)
-	if err != nil {
-		return err
-	}
-	sub := client.Subscribe(sessionID)
-	defer sub.Close()
-
 	prompt := "Say hello in five words."
 	if len(args) > 0 {
 		prompt = args[0]
 	}
-	message, err := protocol.NewRawRequest("send_message", map[string]any{"session_id": sessionID, "content": prompt})
+	turn, err := session.StartTurn(lifecycleCtx, prompt, jcode.SendOptions{})
 	if err != nil {
 		return err
 	}
-	if _, err := client.Request(ctx, message); err != nil {
-		return err
-	}
 
+	waitCtx, stopWaiting := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stopWaiting()
+	if err := turn.Accepted(waitCtx); err != nil {
+		return finishInterruptedTurn(turn, err)
+	}
 	for {
-		event, err := sub.Next(ctx)
-		if err != nil {
-			return err
+		event, nextErr := turn.Next(waitCtx)
+		if nextErr != nil {
+			return finishInterruptedTurn(turn, nextErr)
 		}
-		switch event.Kind {
-		case "text_delta":
-			var value struct {
-				Text string `json:"text"`
-			}
-			if err := event.Decode(&value); err != nil {
-				return err
-			}
-			fmt.Print(value.Text)
-		case "turn_done":
+		switch value := event.(type) {
+		case *jcode.TextDelta:
+			_, _ = io.WriteString(os.Stdout, value.Text)
+		case *jcode.PermissionRequest:
+			// Apply an explicit application policy before responding.
+		case *jcode.TurnDone:
 			fmt.Println()
-			return nil
-		case "error":
-			return fmt.Errorf("harness error: %s", event.Frame.Event)
+			return waitForTerminal(turn)
 		}
 	}
 }
 
-func sessionID(frame protocol.ServerFrame) (string, error) {
-	fields, ok := protocol.FieldsJSON(frame.Event)
-	if !ok {
-		return "", fmt.Errorf("session creation returned %T", frame.Event)
-	}
-	var value struct {
-		SessionID string `json:"session_id"`
-	}
-	if err := json.Unmarshal(fields, &value); err != nil {
-		return "", err
-	}
-	if value.SessionID == "" {
-		return "", errors.New("session creation reply did not contain session_id")
-	}
-	return value.SessionID, nil
+func finishInterruptedTurn(turn *jcode.Turn, waitErr error) error {
+	// Canceling Accepted/Next/Wait only abandons that local wait. Turn.Cancel is
+	// the distinct, at-most-once server-side cancellation request.
+	cancelCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	cancelErr := turn.Cancel(cancelCtx)
+	cancel()
+	return errors.Join(waitErr, cancelErr, waitForTerminal(turn))
 }
 
-func mustCWD() string {
-	cwd, err := os.Getwd()
+func waitForTerminal(turn *jcode.Turn) error {
+	// Use a fresh bounded context after cancellation. Reusing the interrupted
+	// event-wait context would make this wait return immediately.
+	waitCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	result, err := turn.Wait(waitCtx)
 	if err != nil {
-		return "."
+		return err
 	}
-	return cwd
+	return result.Err
 }

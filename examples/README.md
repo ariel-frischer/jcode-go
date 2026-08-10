@@ -2,14 +2,16 @@
 
 These examples are compile-checkable packages:
 
-- `oneshot`: connect to the shared `jcode api-bridge`, create a session, send one prompt, and stream text until `turn_done`.
-- `streaming`: run a long-lived consumer for an existing `JCODE_SESSION_ID`, with bounded buffering and forward-compatible event handling.
-- `private`: supervise an isolated bridge process with a separate `JCODE_HOME` and API socket. Prefer `jcode.Launch` in applications that do not need custom process supervision.
+- `oneshot`: connect to a shared `jcode api-bridge`, create a session in an explicit absolute cwd, and use `StartTurn`, `Accepted`, `Next`, `Cancel`, and `Wait`. Interrupted event waits request server-side cancellation and use a fresh bounded context for the terminal wait.
+- `streaming`: attach to an existing session through the compatible `Session.Events` API, with bounded buffering and forward-compatible event handling that does not log raw fields.
+- `private`: launch a Linux private runtime with an explicit `LaunchOptions.WorkingDir`, use the same cwd for session creation, transfer ownership with `DetachInstance`, close the client transport, and clean up with context-bounded `ShutdownInstance`.
 
-From `sdk/go`:
+From the repository root:
 
 ```bash
 go build ./examples/oneshot ./examples/streaming ./examples/private
 ```
 
-Runtime examples using Unix sockets require a local jcode installation. Do not use the examples' permissive output handling as a production permission policy, and do not log raw prompts, credentials, tool arguments, or protocol frames.
+Runtime examples use Unix sockets and require a local jcode installation. Linux is the supported private-process supervision target. Existing `Session.Send`, `Session.Events`, and raw protocol APIs remain available for compatibility, but `StartTurn` is the API for owning acceptance, cancellation, and an immutable terminal result.
+
+Do not log raw prompts, credentials, response or tool content, environment values, protocol frames, private session IDs, or private runtime paths.

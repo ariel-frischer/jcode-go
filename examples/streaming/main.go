@@ -2,18 +2,18 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
 
 	jcode "github.com/ariel-frischer/jcode-go"
-	"github.com/ariel-frischer/jcode-go/protocol"
 )
 
-// Example: a long-lived service with one event consumer per client.
+// Example: attach to an existing session and consume its compatible typed Events
+// API. This does not own or cancel a turn started elsewhere.
 func main() {
 	if err := run(context.Background()); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -48,33 +48,30 @@ func run(ctx context.Context) error {
 	if sessionID == "" {
 		return errors.New("set JCODE_SESSION_ID")
 	}
-	sub := client.Subscribe(sessionID)
-	defer sub.Close()
+	session, err := client.AttachSession(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	stream := session.Events(ctx)
+	defer stream.Close()
 	for {
-		event, err := sub.Next(ctx)
+		event, err := stream.Next(ctx)
 		if err != nil {
 			return fmt.Errorf("event stream: %w", err)
 		}
-		switch event.Kind {
-		case "text_delta":
-			var value struct {
-				Text string `json:"text"`
-			}
-			if err := event.Decode(&value); err != nil {
-				return err
-			}
-			fmt.Print(value.Text)
-		case "permission_request":
+		switch value := event.(type) {
+		case *jcode.TextDelta:
+			_, _ = io.WriteString(os.Stdout, value.Text)
+		case *jcode.PermissionRequest:
 			// Apply an explicit product policy. Never auto-approve by default.
-		case "turn_done":
+		case *jcode.TurnDone:
 			fmt.Println()
 			return nil
 		default:
-			// Unknown event kinds are forward-compatible.
-			if fields, ok := protocol.FieldsJSON(event.Frame.Event); ok {
-				var metadata map[string]any
-				_ = json.Unmarshal(fields, &metadata)
-				fmt.Fprintf(os.Stderr, "event=%s fields=%v\n", event.Kind, metadata)
+			// Unknown kinds remain forward-compatible. Log only the type or stable
+			// kind, never raw fields that may contain model or tool content.
+			if unknown, ok := value.(jcode.UnknownEvent); ok {
+				fmt.Fprintf(os.Stderr, "event=%s\n", unknown.Kind)
 			}
 		}
 	}

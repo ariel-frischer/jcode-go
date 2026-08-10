@@ -154,6 +154,7 @@ type launchedInstance struct {
 	shutdownForceKillOnce sync.Once
 	shutdownContextErrs   []error
 	shutdownErr           error
+	observer              Observer
 }
 
 func (i *launchedInstance) SocketPath() string { return i.socketPath }
@@ -194,6 +195,7 @@ func (i *launchedInstance) shutdown(ctx context.Context) error {
 	}
 	owner, done := i.beginShutdown(ctx)
 	if owner {
+		emitLaunchObservation(i.observer, Observation{Kind: "shutdown_start"})
 		i.finishShutdown(i.runShutdown())
 	}
 	<-done
@@ -269,10 +271,12 @@ func (i *launchedInstance) runShutdown() error {
 	}
 
 	if i.cmd != nil || i.waitDone != nil || i.processGroupID != 0 {
-		_, err := terminateProcess(i.cmd, i.processGroupID, i.waitDone,
+		_, err := terminateProcessObserved(i.cmd, i.processGroupID, i.waitDone,
 			finiteDuration(i.shutdownGracePeriod, defaultShutdownGracePeriod),
 			finiteDuration(i.shutdownReapTimeout, defaultShutdownReapTimeout),
-			i.shutdownForceKill)
+			i.shutdownForceKill, func(kind string) {
+				emitLaunchObservation(i.observer, Observation{Kind: kind})
+			})
 		if err != nil {
 			errs = append(errs, err)
 		}
@@ -281,6 +285,7 @@ func (i *launchedInstance) runShutdown() error {
 		i.ephemeral, i.cleanupTimeout); err != nil {
 		errs = append(errs, err)
 	}
+	emitLaunchObservation(i.observer, Observation{Kind: "shutdown_cleanup_complete"})
 	return errors.Join(errs...)
 }
 
@@ -293,8 +298,13 @@ func (i *launchedInstance) finishShutdown(phaseErr error) {
 	errs = append(errs, i.shutdownContextErrs...)
 	i.shutdownErr = errors.Join(errs...)
 	i.shutdownFinished = true
+	observation := Observation{Kind: "shutdown_complete"}
+	if i.shutdownErr != nil {
+		observation.Error = "shutdown_failed"
+	}
 	close(i.shutdownDone)
 	i.shutdownMu.Unlock()
+	emitLaunchObservation(i.observer, observation)
 }
 
 func finiteDuration(value, fallback time.Duration) time.Duration {
@@ -355,7 +365,18 @@ func emitLaunchObservation(observer Observer, observation Observation) {
 // LaunchInstance starts an isolated bridge without connecting the protocol
 // client. This is useful when the caller needs to control connection setup.
 func LaunchInstance(options LaunchOptions) (Instance, error) {
-	return launchInstance(options)
+	observer := options.Observer
+	if observer == nil {
+		observer = options.ClientOptions.Observer
+	}
+	emitLaunchObservation(observer, Observation{Kind: "launch_start"})
+	instance, err := launchInstanceWithObserver(options, observer)
+	if err != nil {
+		emitLaunchObservation(observer, Observation{Kind: "launch_error", Error: string(launchErrorCode(err))})
+		return nil, err
+	}
+	emitLaunchObservation(observer, Observation{Kind: "launch_ready"})
+	return instance, nil
 }
 
 func launchInstance(options LaunchOptions) (Instance, error) {
@@ -458,7 +479,7 @@ func launchInstanceWithObserver(options LaunchOptions, observer Observer) (Insta
 				ownedPaths: ownedPaths, ephemeral: ephemeral, cleanupTimeout: o.CleanupTimeout,
 				shutdownGracePeriod: o.ShutdownGracePeriod, shutdownReapTimeout: o.ShutdownReapTimeout,
 				cmd: cmd, processGroupID: processGroupID, daemonPID: readDaemonPID(home, runtimeDir),
-				waitDone: waitDone, bridgeDone: bridgeDone}, nil
+				waitDone: waitDone, bridgeDone: bridgeDone, observer: observer}, nil
 		}
 		select {
 		case waitErr := <-waitDone:

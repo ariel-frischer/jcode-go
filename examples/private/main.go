@@ -2,19 +2,18 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"net"
+	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"time"
 
 	jcode "github.com/ariel-frischer/jcode-go"
 )
 
-// Example: own a private process and isolate its home/socket from the user.
-// The exact bridge command is deployment-specific. Verify flags for the jcode
-// version you ship before enabling this pattern in production.
+// Example: launch and explicitly own one Linux private runtime. LaunchOptions
+// and the session use the same absolute worker directory.
 func main() {
 	if err := run(context.Background()); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -22,68 +21,78 @@ func main() {
 	}
 }
 
-func run(parent context.Context) error {
-	root, err := os.MkdirTemp("", "jcode-private-")
+func run(lifecycleCtx context.Context) error {
+	workingDir, err := filepath.Abs(".")
+	if err != nil {
+		return fmt.Errorf("resolve working directory: %w", err)
+	}
+	client, err := jcode.Launch(lifecycleCtx, jcode.LaunchOptions{
+		WorkingDir: workingDir,
+		ClientOptions: jcode.Options{
+			ClientName: "go-private-example/0.1",
+		},
+	})
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(root)
-	home := filepath.Join(root, "home")
-	runtimeDir := filepath.Join(root, "run")
-	if err := os.MkdirAll(runtimeDir, 0o700); err != nil {
-		return err
-	}
-	socketPath := filepath.Join(runtimeDir, "jcode-api.sock")
 
-	ctx, cancel := context.WithCancel(parent)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "jcode", "api-bridge", "--api-socket", socketPath)
-	cmd.Env = append([]string{
-		"PATH=" + os.Getenv("PATH"),
-		"JCODE_HOME=" + home,
-		"JCODE_RUNTIME_DIR=" + runtimeDir,
-		"JCODE_API_SOCKET=" + socketPath,
-		"JCODE_NO_TELEMETRY=1",
-	}, "JCODE_CONFIG_DIR=") // Do not inherit the user's config by accident.
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr // Never log this blindly if it may contain secrets.
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start private jcode: %w", err)
+	// Detaching transfers private-runtime ownership exactly once. Client.Close is
+	// then transport-only, while ShutdownInstance remains responsible for bounded
+	// Linux TERM, KILL escalation, reap, and owned-path cleanup.
+	instance, ok := client.DetachInstance()
+	if !ok {
+		return client.Close()
 	}
-	defer func() {
-		cancel()
-		_ = cmd.Wait()
-	}()
 
-	if err := waitForSocket(ctx, socketPath, 10*time.Second); err != nil {
-		return err
-	}
-	conn, err := net.Dial("unix", socketPath)
-	if err != nil {
-		return err
-	}
-	client, err := jcode.NewClient(ctx, conn, jcode.Options{ClientName: "go-private-example/0.1"})
-	if err != nil {
-		return err
-	}
-	defer client.Close()
-	fmt.Printf("private client ready; home=%s\n", home)
-	return nil
+	runErr := runTurn(lifecycleCtx, client, workingDir)
+	closeErr := client.Close()
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 15*time.Second)
+	shutdownErr := jcode.ShutdownInstance(shutdownCtx, instance)
+	cancelShutdown()
+	return errors.Join(runErr, closeErr, shutdownErr)
 }
 
-func waitForSocket(ctx context.Context, path string, timeout time.Duration) error {
-	deadline := time.NewTimer(timeout)
-	defer deadline.Stop()
+func runTurn(lifecycleCtx context.Context, client *jcode.Client, workingDir string) error {
+	session, err := client.CreateSession(lifecycleCtx, jcode.CreateSessionOptions{WorkingDir: workingDir})
+	if err != nil {
+		return err
+	}
+	turn, err := session.StartTurn(lifecycleCtx, "List the top-level files.", jcode.SendOptions{})
+	if err != nil {
+		return err
+	}
+	waitCtx, cancelWait := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelWait()
+	if err := turn.Accepted(waitCtx); err != nil {
+		return cancelAndWait(turn, err)
+	}
 	for {
-		if _, err := os.Stat(path); err == nil {
-			return nil
+		event, nextErr := turn.Next(waitCtx)
+		if nextErr != nil {
+			return cancelAndWait(turn, nextErr)
 		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-deadline.C:
-			return fmt.Errorf("private socket did not appear: %s", path)
-		case <-time.After(50 * time.Millisecond):
+		switch value := event.(type) {
+		case *jcode.TextDelta:
+			_, _ = io.WriteString(os.Stdout, value.Text)
+		case *jcode.PermissionRequest:
+			// Apply an explicit application policy before responding.
+		case *jcode.TurnDone:
+			fmt.Println()
+			result, waitErr := turn.Wait(waitCtx)
+			if waitErr != nil {
+				return waitErr
+			}
+			return result.Err
 		}
 	}
+}
+
+func cancelAndWait(turn *jcode.Turn, interrupted error) error {
+	cancelCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	cancelErr := turn.Cancel(cancelCtx)
+	cancel()
+	terminalCtx, cancelTerminal := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelTerminal()
+	result, waitErr := turn.Wait(terminalCtx)
+	return errors.Join(interrupted, cancelErr, waitErr, result.Err)
 }

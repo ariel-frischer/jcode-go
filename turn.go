@@ -210,6 +210,7 @@ func (t *Turn) Wait(ctx context.Context) (TurnResult, error) {
 
 func (t *Turn) dispatch() {
 	defer close(t.events)
+	firstEvent := true
 	for {
 		event, err := t.subscription.Next(context.Background())
 		if err != nil {
@@ -218,13 +219,19 @@ func (t *Turn) dispatch() {
 		}
 
 		if event.Kind == "message_accepted" {
-			t.finishAcceptance(nil)
+			if t.finishAcceptance(nil) {
+				t.client.emit(Observation{Kind: "turn_prompt_accepted"})
+			}
 			t.mu.Lock()
 			if !t.terminal && t.state != turnCancelRequested {
 				t.state = turnAccepted
 			}
 			t.mu.Unlock()
 			continue
+		}
+		if firstEvent {
+			firstEvent = false
+			t.client.emit(Observation{Kind: "turn_first_event"})
 		}
 		if value, ok := event.Frame.Event.(protocol.Error); ok {
 			cause := EventError{Code: value.Code}
@@ -277,8 +284,10 @@ func (t *Turn) finishTurnDone(event TypedEvent) bool {
 	select {
 	case t.events <- event:
 	default:
-		t.finishTerminalLocked(TurnResult{Kind: TurnResultSubscriberOverflow, Err: ErrSubscriberOverflow})
+		result := TurnResult{Kind: TurnResultSubscriberOverflow, Err: ErrSubscriberOverflow}
+		t.finishTerminalLocked(result)
 		t.mu.Unlock()
+		t.emitTerminal(result)
 		t.subscription.Close()
 		return false
 	}
@@ -288,8 +297,10 @@ func (t *Turn) finishTurnDone(event TypedEvent) bool {
 		kind = TurnResultCanceled
 		err = ErrTurnCanceled
 	}
-	t.finishTerminalLocked(TurnResult{Kind: kind, Err: err})
+	result := TurnResult{Kind: kind, Err: err}
+	t.finishTerminalLocked(result)
 	t.mu.Unlock()
+	t.emitTerminal(result)
 	t.subscription.Close()
 	return true
 }
@@ -312,7 +323,13 @@ func (t *Turn) watchLifecycle(ctx context.Context) {
 }
 
 func (t *Turn) runCancel() {
+	t.client.emit(Observation{Kind: "turn_cancel_request_start"})
 	err := t.requestCancel(context.Background())
+	if err != nil {
+		t.client.emit(Observation{Kind: "turn_cancel_request_error", Error: turnCancelErrorKind(err)})
+	} else {
+		t.client.emit(Observation{Kind: "turn_cancel_request_complete"})
+	}
 	t.mu.Lock()
 	t.cancelErr = err
 	close(t.cancelDone)
@@ -384,14 +401,17 @@ func (t *Turn) nextResult(event TypedEvent, ok bool) (TypedEvent, error) {
 	return nil, io.EOF
 }
 
-func (t *Turn) finishAcceptance(err error) {
+func (t *Turn) finishAcceptance(err error) bool {
 	t.mu.Lock()
+	set := false
 	if !t.acceptanceSet {
 		t.acceptanceSet = true
 		t.acceptanceErr = err
 		close(t.acceptedDone)
+		set = true
 	}
 	t.mu.Unlock()
+	return set
 }
 
 func (t *Turn) finishTerminal(result TurnResult) bool {
@@ -401,8 +421,28 @@ func (t *Turn) finishTerminal(result TurnResult) bool {
 		return false
 	}
 	t.mu.Unlock()
+	t.emitTerminal(result)
 	t.subscription.Close()
 	return true
+}
+
+func (t *Turn) emitTerminal(result TurnResult) {
+	t.client.emit(Observation{Kind: "turn_terminal", Outcome: result.Kind})
+}
+
+func turnCancelErrorKind(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "request_timeout"
+	case errors.Is(err, context.Canceled):
+		return "request_canceled"
+	case errors.Is(err, ErrClosed):
+		return "client_closed"
+	case errors.Is(err, ErrDisconnected):
+		return "disconnected"
+	default:
+		return "request_failed"
+	}
 }
 
 func (t *Turn) finishTerminalLocked(result TurnResult) bool {
