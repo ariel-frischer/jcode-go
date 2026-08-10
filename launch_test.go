@@ -1,7 +1,10 @@
 package jcode
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -53,6 +56,70 @@ func TestLaunchEnvironmentExplicitAPIKeyReplacesAmbientValue(t *testing.T) {
 	}
 	if got := values["JCODE_HOME"]; got != "/private/home" {
 		t.Fatalf("JCODE_HOME = %q, want private home", got)
+	}
+}
+
+func TestInheritLaunchCredentialsCopiesLegacyCodexOAuth(t *testing.T) {
+	root := t.TempDir()
+	userJcodeHome := filepath.Join(root, ".jcode")
+	privateHome := filepath.Join(root, "private")
+	legacyAuth := filepath.Join(root, ".codex", "auth.json")
+	if err := os.MkdirAll(filepath.Dir(legacyAuth), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(userJcodeHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyAuth, []byte(`{"tokens":{"access_token":"test"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("JCODE_HOME", userJcodeHome)
+
+	got, err := inheritLaunchCredentials(LaunchOptions{}, privateHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Env[allowLegacyCodexAuthEnv] != "1" {
+		t.Fatalf("%s = %q, want 1", allowLegacyCodexAuthEnv, got.Env[allowLegacyCodexAuthEnv])
+	}
+	destination := filepath.Join(privateHome, legacyCodexAuthDestination)
+	info, err := os.Lstat(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+		t.Fatalf("legacy auth mode = %v, want regular 0600", info.Mode())
+	}
+	data, err := os.ReadFile(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != `{"tokens":{"access_token":"test"}}` {
+		t.Fatalf("legacy auth content = %q", data)
+	}
+}
+
+func TestInheritCredentialsReportsLegacyCodexOAuth(t *testing.T) {
+	root := t.TempDir()
+	fromHome := filepath.Join(root, ".jcode")
+	toHome := filepath.Join(root, "private")
+	legacyAuth := filepath.Join(root, ".codex", "auth.json")
+	if err := os.MkdirAll(filepath.Dir(legacyAuth), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(fromHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyAuth, []byte("oauth"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	inherited, err := InheritCredentials(fromHome, toHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(inherited, legacyCodexAuthDestination) {
+		t.Fatalf("inherited = %q, want %q", inherited, legacyCodexAuthDestination)
 	}
 }
 
