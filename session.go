@@ -176,6 +176,7 @@ func (s Session) StartTurn(lifecycleCtx context.Context, content string, options
 		}
 		return nil, fmt.Errorf("start turn lifecycle: %w", cause)
 	}
+	s.client.emit(Observation{Kind: "turn_start"})
 
 	images := make([][2]string, len(options.Images))
 	copy(images, options.Images)

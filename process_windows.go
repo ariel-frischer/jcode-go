@@ -25,6 +25,18 @@ func terminateProcess(
 	reapTimeout time.Duration,
 	_ <-chan struct{},
 ) (bool, error) {
+	return terminateProcessObserved(cmd, 0, waitDone, 0, reapTimeout, nil, nil)
+}
+
+func terminateProcessObserved(
+	cmd *exec.Cmd,
+	_ int,
+	waitDone <-chan error,
+	_ time.Duration,
+	reapTimeout time.Duration,
+	_ <-chan struct{},
+	_ func(string),
+) (bool, error) {
 	if cmd == nil || cmd.Process == nil {
 		return false, nil
 	}
