@@ -34,11 +34,11 @@ const (
 func TestPrivateRuntimeLifecycleAcceptance(t *testing.T) {
 	worktree, err := filepath.Abs(".")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("resolve acceptance worktree: %T", err)
 	}
 
 	t.Run("accepted_stall_cancel_and_cleanup", func(t *testing.T) {
-		harness := launchAcceptanceHarness(t, worktree, "stall")
+		harness := launchAcceptanceHarness(t, worktree, "term_ignore")
 		session := createAcceptanceSession(t, harness, worktree)
 		turn, err := session.StartTurn(context.Background(), "synthetic acceptance input", jcode.SendOptions{})
 		if err != nil {
@@ -77,7 +77,13 @@ func TestPrivateRuntimeLifecycleAcceptance(t *testing.T) {
 		if result.Kind != jcode.TurnResultCanceled || !errors.Is(result.Err, jcode.ErrTurnCanceled) {
 			t.Fatalf("terminal kind = %q, canceled=%t", result.Kind, errors.Is(result.Err, jcode.ErrTurnCanceled))
 		}
-		harness.closeAndAssertClean(t)
+		shutdownElapsed := harness.closeAndAssertClean(t)
+		if shutdownElapsed < 80*time.Millisecond {
+			t.Fatalf("private shutdown elapsed_ms=%d, want TERM grace before KILL", shutdownElapsed.Milliseconds())
+		}
+		if pathMissing(filepath.Join(harness.marksDir, "term-observed")) {
+			t.Fatal("TERM-ignoring descendant did not observe group TERM")
+		}
 	})
 
 	t.Run("owned_bridge_exit_is_typed_and_cleanup_is_bounded", func(t *testing.T) {
@@ -93,7 +99,7 @@ func TestPrivateRuntimeLifecycleAcceptance(t *testing.T) {
 			t.Fatalf("Accepted failed: %T", err)
 		}
 		if err := os.WriteFile(harness.triggerPath, []byte("exit"), 0o600); err != nil {
-			t.Fatal(err)
+			t.Fatalf("trigger bridge exit: %T", err)
 		}
 		result, err := turn.Wait(ctx)
 		if err != nil {
@@ -103,6 +109,9 @@ func TestPrivateRuntimeLifecycleAcceptance(t *testing.T) {
 			t.Fatalf("terminal kind = %q, bridge_exited=%t", result.Kind, errors.Is(result.Err, jcode.ErrBridgeExited))
 		}
 		harness.closeAndAssertClean(t)
+		if !pathMissing(filepath.Join(harness.marksDir, "term-observed")) {
+			t.Fatal("post-reap shutdown signaled the ambiguous process group")
+		}
 	})
 }
 
@@ -217,7 +226,7 @@ func drainAndWaitTurn(ctx context.Context, turn *jcode.Turn) (jcode.TurnResult, 
 		default:
 		}
 		_, err := turn.Next(ctx)
-		if err != nil && !errors.Is(err, io.EOF) {
+		if err != nil {
 			select {
 			case outcome := <-resultCh:
 				return outcome.result, outcome.err
@@ -258,9 +267,14 @@ type acceptanceHarness struct {
 	home        string
 	runtimeDir  string
 	socketPath  string
-	bridgePID   int
-	serverPID   int
+	bridge      acceptanceProcessIdentity
+	server      acceptanceProcessIdentity
 	worktree    string
+}
+
+type acceptanceProcessIdentity struct {
+	pid       int
+	startTime string
 }
 
 func launchAcceptanceHarness(t *testing.T, worktree, mode string) *acceptanceHarness {
@@ -270,15 +284,15 @@ func launchAcceptanceHarness(t *testing.T, worktree, mode string) *acceptanceHar
 	wrapperPath := filepath.Join(marksDir, "jcode-fixture")
 	testBinary, err := os.Executable()
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("resolve acceptance executable: %T", err)
 	}
-	script := fmt.Sprintf("#!/bin/sh\n\"%s\" -test.run=^TestPrivateRuntimeAcceptanceBridgeHelper$ &\nchild=$!\nprintf '%%s\\n' \"$$\" > \"$JCODE_GO_ACCEPTANCE_MARKS/bridge.pid\"\nprintf '%%s\\n' \"$child\" > \"$JCODE_GO_ACCEPTANCE_MARKS/server.pid\"\nwhile kill -0 \"$child\" 2>/dev/null; do\n  if [ -f \"$JCODE_GO_ACCEPTANCE_TRIGGER\" ]; then exit 23; fi\n  sleep 0.01\ndone\nwait \"$child\"\n", strings.ReplaceAll(testBinary, "\"", "\\\""))
+	script := fmt.Sprintf("#!/bin/sh\nif [ \"$JCODE_GO_ACCEPTANCE_MODE\" = \"term_ignore\" ]; then trap '' TERM; fi\n\"%s\" -test.run=^TestPrivateRuntimeAcceptanceBridgeHelper$ &\nchild=$!\nprintf '%%s\\n' \"$$\" > \"$JCODE_GO_ACCEPTANCE_MARKS/bridge.pid\"\nprintf '%%s\\n' \"$child\" > \"$JCODE_GO_ACCEPTANCE_MARKS/server.pid\"\nwhile kill -0 \"$child\" 2>/dev/null; do\n  if [ -f \"$JCODE_GO_ACCEPTANCE_TRIGGER\" ]; then exit 23; fi\n  sleep 0.01\ndone\nwait \"$child\"\n", strings.ReplaceAll(testBinary, "\"", "\\\""))
 	if err := os.WriteFile(wrapperPath, []byte(script), 0o700); err != nil {
-		t.Fatal(err)
+		t.Fatalf("write acceptance bridge: %T", err)
 	}
 	unrelated := filepath.Join(marksDir, "caller-owned")
 	if err := os.WriteFile(unrelated, []byte("keep"), 0o600); err != nil {
-		t.Fatal(err)
+		t.Fatalf("write caller-owned marker: %T", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	client, err := jcode.Launch(ctx, jcode.LaunchOptions{
@@ -303,10 +317,10 @@ func launchAcceptanceHarness(t *testing.T, worktree, mode string) *acceptanceHar
 	h.home = readMark(t, marksDir, "home")
 	h.runtimeDir = filepath.Join(h.home, "run")
 	h.socketPath = filepath.Join(h.runtimeDir, "jcode-api.sock")
-	h.bridgePID = readPIDMark(t, marksDir, "bridge.pid")
-	h.serverPID = readPIDMark(t, marksDir, "server.pid")
+	h.bridge = readProcessIdentity(t, readPIDMark(t, marksDir, "bridge.pid"))
+	h.server = readProcessIdentity(t, readPIDMark(t, marksDir, "server.pid"))
 	if got := filepath.Clean(readMark(t, marksDir, "cwd")); got != worktree {
-		t.Fatalf("private bridge cwd = %q, want selected worktree", got)
+		t.Fatal("private bridge did not use selected worktree")
 	}
 	if !filepath.IsAbs(h.home) || !strings.Contains(filepath.Base(h.home), "jcode-sdk-instance-") {
 		t.Fatal("private launch did not use an absolute ephemeral home")
@@ -323,15 +337,15 @@ func createAcceptanceSession(t *testing.T, harness *acceptanceHarness, worktree 
 		t.Fatalf("CreateSession failed: %T", err)
 	}
 	if filepath.Clean(session.Info.WorkingDir) != worktree {
-		t.Fatalf("session cwd = %q, want selected worktree", session.Info.WorkingDir)
+		t.Fatal("session did not retain selected worktree")
 	}
 	if got := filepath.Clean(readMark(t, harness.marksDir, "session-cwd")); got != worktree {
-		t.Fatalf("create_session request cwd = %q, want selected worktree", got)
+		t.Fatal("create_session did not send selected worktree")
 	}
 	return session
 }
 
-func (h *acceptanceHarness) closeAndAssertClean(t *testing.T) {
+func (h *acceptanceHarness) closeAndAssertClean(t *testing.T) time.Duration {
 	t.Helper()
 	started := time.Now()
 	if err := h.client.Close(); err != nil && !errors.Is(err, jcode.ErrClosed) {
@@ -340,17 +354,24 @@ func (h *acceptanceHarness) closeAndAssertClean(t *testing.T) {
 	if elapsed := time.Since(started); elapsed >= 2*time.Second {
 		t.Fatalf("private shutdown took %s, want bounded cleanup", elapsed)
 	}
-	assertPIDGone(t, h.bridgePID)
-	assertPIDGone(t, h.serverPID)
-	assertProcessGroupGone(t, h.bridgePID)
-	for _, path := range []string{h.socketPath, h.runtimeDir, h.home} {
-		if !pathMissing(path) {
-			t.Fatalf("SDK-owned path remains: %s", filepath.Base(path))
+	assertProcessGone(t, "bridge", h.bridge)
+	assertProcessGone(t, "descendant", h.server)
+	for _, resource := range []struct {
+		name string
+		path string
+	}{
+		{name: "socket", path: h.socketPath},
+		{name: "runtime directory", path: h.runtimeDir},
+		{name: "ephemeral home", path: h.home},
+	} {
+		if !pathMissing(resource.path) {
+			t.Fatalf("SDK-owned %s remains", resource.name)
 		}
 	}
 	if _, err := os.Stat(filepath.Join(h.marksDir, "caller-owned")); err != nil {
-		t.Fatalf("caller-owned path was removed: %v", err)
+		t.Fatal("caller-owned path was removed")
 	}
+	return time.Since(started)
 }
 
 func readMark(t *testing.T, dir, name string) string {
@@ -377,44 +398,51 @@ func readPIDMark(t *testing.T, dir, name string) int {
 	return pid
 }
 
-func assertPIDGone(t *testing.T, pid int) {
+func readProcessIdentity(t *testing.T, pid int) acceptanceProcessIdentity {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		if !pidAlive(pid) {
+		_, startTime, err := readProcessStat(pid)
+		if err == nil {
+			return acceptanceProcessIdentity{pid: pid, startTime: startTime}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timed out recording fixture process identity")
+	return acceptanceProcessIdentity{}
+}
+
+func assertProcessGone(t *testing.T, name string, identity acceptanceProcessIdentity) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if !processIdentityAlive(identity) {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("SDK-owned PID %d remains", pid)
+	t.Fatalf("SDK-owned %s process remains", name)
 }
 
-func assertProcessGroupGone(t *testing.T, pgid int) {
-	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		if errors.Is(syscall.Kill(-pgid, 0), syscall.ESRCH) {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("SDK-owned process group %d remains", pgid)
+func processIdentityAlive(identity acceptanceProcessIdentity) bool {
+	state, startTime, err := readProcessStat(identity.pid)
+	return err == nil && startTime == identity.startTime && state != "Z"
 }
 
-func pidAlive(pid int) bool {
-	if errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
-		return false
-	}
+func readProcessStat(pid int) (state, startTime string, err error) {
 	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
 	if err != nil {
-		return !os.IsNotExist(err)
+		return "", "", err
 	}
 	end := strings.LastIndexByte(string(data), ')')
 	if end < 0 {
-		return true
+		return "", "", errors.New("malformed process stat")
 	}
 	fields := strings.Fields(string(data)[end+1:])
-	return len(fields) == 0 || fields[0] != "Z"
+	if len(fields) <= 19 {
+		return "", "", errors.New("short process stat")
+	}
+	return fields[0], fields[19], nil
 }
 
 func pathMissing(path string) bool {
@@ -428,17 +456,20 @@ func TestPrivateRuntimeAcceptanceBridgeHelper(t *testing.T) {
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("resolve fixture working directory: %T", err)
 	}
 	marksDir := os.Getenv(acceptanceMarksEnv)
 	writeHelperMark(t, marksDir, "cwd", cwd)
 	writeHelperMark(t, marksDir, "home", os.Getenv("JCODE_HOME"))
 
-	signalIgnoreTERM()
+	recordAndIgnoreTERM(marksDir)
+	if os.Getenv(acceptanceModeEnv) == "bridge_exit" {
+		go exitAfterTrigger(os.Getenv(acceptanceTriggerEnv))
+	}
 	socketPath := os.Getenv("JCODE_API_SOCKET")
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("listen on fixture socket: %T", err)
 	}
 	defer listener.Close()
 	for {
@@ -452,21 +483,35 @@ func TestPrivateRuntimeAcceptanceBridgeHelper(t *testing.T) {
 			return
 		}
 		if !errors.Is(err, io.EOF) {
-			t.Fatal(err)
+			t.Fatalf("serve fixture connection: %T", err)
 		}
 	}
 }
 
-func signalIgnoreTERM() {
-	// The fixture intentionally survives the bridge leader's cooperative exit so
-	// public shutdown must clean the recorded process group descendants.
-	signal.Ignore(syscall.SIGTERM)
+func recordAndIgnoreTERM(marksDir string) {
+	term := make(chan os.Signal, 1)
+	signal.Notify(term, syscall.SIGTERM)
+	go func() {
+		for range term {
+			_ = os.WriteFile(filepath.Join(marksDir, "term-observed"), []byte("observed\n"), 0o600)
+		}
+	}()
+}
+
+func exitAfterTrigger(triggerPath string) {
+	for {
+		if _, err := os.Stat(triggerPath); err == nil {
+			time.Sleep(250 * time.Millisecond)
+			os.Exit(0)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func writeHelperMark(t *testing.T, dir, name, value string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(value+"\n"), 0o600); err != nil {
-		t.Fatal(err)
+		t.Fatalf("write fixture marker: %T", err)
 	}
 }
 
@@ -514,7 +559,12 @@ func serveAcceptanceConnection(conn net.Conn, mode string) error {
 			if err := sendAcceptanceFrame(encoder, frame.ID, "ok", nil); err != nil {
 				return err
 			}
-			return sendAcceptanceEvent(encoder, "turn_done", map[string]any{"session_id": sessionID})
+			if err := sendAcceptanceEvent(encoder, "turn_done", map[string]any{"session_id": sessionID}); err != nil {
+				return err
+			}
+			if mode != "term_ignore" {
+				return nil
+			}
 		}
 	}
 }

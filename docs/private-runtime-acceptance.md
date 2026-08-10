@@ -10,9 +10,9 @@ Run the process-backed fixture without provider access:
 go test -run '^TestPrivateRuntimeLifecycleAcceptance$' -count=1 -v .
 ```
 
-The fixture launches an SDK-owned private bridge in the explicit absolute test worktree, creates a session with that same working directory, reproduces an accepted but stalled turn, cancels it through `Turn.Cancel`, and performs a fresh bounded `Turn.Wait`. A second path forces the owned bridge leader to exit while a descendant still holds the transport, which must produce `TurnResultBridgeExited` with `errors.Is(result.Err, ErrBridgeExited)`.
+The fixture launches an SDK-owned private bridge in the explicit absolute test worktree, creates a session with that same working directory, reproduces an accepted but stalled turn, cancels it through `Turn.Cancel`, and performs a fresh bounded `Turn.Wait`. The bridge leader and descendant then ignore TERM while the leader remains unreaped, proving bounded KILL escalation through the public shutdown path. A second path forces the owned bridge leader to exit while a descendant briefly holds the transport, which must produce `TurnResultBridgeExited` with `errors.Is(result.Err, ErrBridgeExited)`. That descendant self-terminates after preserving the bridge-exit ordering; shutdown must not inspect or signal the ambiguous numeric process group after leader reap.
 
-Both paths record only synthetic process ownership evidence. Shutdown assertions verify that the recorded bridge PID, descendant PID, process group, API socket, runtime directory, and ephemeral home are gone. A caller-owned marker outside the private home must remain.
+Both paths record only synthetic process ownership evidence. Shutdown assertions verify that the recorded bridge and descendant identities, API socket, runtime directory, and ephemeral home are gone. A caller-owned marker outside the private home must remain. Diagnostics use stable phase and resource labels rather than raw process IDs, paths, prompts, frames, or session identifiers.
 
 ## Optional real OpenAI OAuth smoke
 

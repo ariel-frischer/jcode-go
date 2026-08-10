@@ -55,20 +55,10 @@ func terminateProcessGroup(
 	}
 	grace = finiteDuration(grace, defaultShutdownGracePeriod)
 	reapTimeout = finiteDuration(reapTimeout, defaultShutdownReapTimeout)
-	leaderReaped := false
 	select {
 	case <-waitDone:
-		leaderReaped = true
+		return false, nil
 	default:
-	}
-	if leaderReaped {
-		alive, err := operations.alive(processGroupID)
-		if err != nil {
-			return false, fmt.Errorf("check owned process group %d after bridge exit: %w", processGroupID, err)
-		}
-		if !alive {
-			return false, nil
-		}
 	}
 
 	var errs []error
@@ -76,48 +66,29 @@ func terminateProcessGroup(
 		errs = append(errs, fmt.Errorf("signal owned process group %d with SIGTERM: %w", processGroupID, err))
 	}
 
+	waitReceived := false
 	contextTriggered := false
 	graceTimer := time.NewTimer(grace)
-	checkTimer := time.NewTicker(10 * time.Millisecond)
-	graceExpired := false
-	groupExited := false
-	for !graceExpired && !groupExited {
-		var wait <-chan error
-		if !leaderReaped {
-			wait = waitDone
-		}
-		select {
-		case <-wait:
-			leaderReaped = true
-		case <-checkTimer.C:
-			alive, err := operations.alive(processGroupID)
-			if err != nil {
-				errs = append(errs, fmt.Errorf("check owned process group %d during SIGTERM grace: %w", processGroupID, err))
-				graceExpired = true
-				continue
-			}
-			groupExited = !alive
-		case <-graceTimer.C:
-			graceExpired = true
-		case <-forceKill:
-			contextTriggered = true
-			graceExpired = true
-		}
+	select {
+	case <-waitDone:
+		waitReceived = true
+	case <-graceTimer.C:
+	case <-forceKill:
+		contextTriggered = true
 	}
-	checkTimer.Stop()
 	if !graceTimer.Stop() {
 		select {
 		case <-graceTimer.C:
 		default:
 		}
 	}
-	if groupExited {
-		if !leaderReaped {
-			if err := waitForProcessReap(processGroupID, waitDone, reapTimeout); err != nil {
-				errs = append(errs, err)
-			}
-		}
+	if waitReceived {
 		return contextTriggered, errors.Join(errs...)
+	}
+	select {
+	case <-waitDone:
+		return contextTriggered, errors.Join(errs...)
+	default:
 	}
 
 	alive, aliveErr := operations.alive(processGroupID)
@@ -125,48 +96,25 @@ func terminateProcessGroup(
 		errs = append(errs, fmt.Errorf("check owned process group %d after SIGTERM: %w", processGroupID, aliveErr))
 	}
 	if !alive {
-		if !leaderReaped {
-			if err := waitForProcessReap(processGroupID, waitDone, reapTimeout); err != nil {
-				errs = append(errs, err)
-			}
+		if err := waitForProcessReap(processGroupID, waitDone, reapTimeout); err != nil {
+			errs = append(errs, err)
 		}
 		return contextTriggered, errors.Join(errs...)
 	}
 
+	select {
+	case <-waitDone:
+		return contextTriggered, errors.Join(errs...)
+	default:
+	}
 	if err := operations.signal(processGroupID, syscall.SIGKILL); err != nil {
 		errs = append(errs, fmt.Errorf("signal owned process group %d with SIGKILL: %w", processGroupID, err))
 	}
 
-	if !leaderReaped {
-		if err := waitForProcessReap(processGroupID, waitDone, reapTimeout); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	if err := waitForProcessGroupExit(processGroupID, reapTimeout, operations.alive); err != nil {
+	if err := waitForProcessReap(processGroupID, waitDone, reapTimeout); err != nil {
 		errs = append(errs, err)
 	}
 	return contextTriggered, errors.Join(errs...)
-}
-
-func waitForProcessGroupExit(processGroupID int, timeout time.Duration, alive func(int) (bool, error)) error {
-	deadline := time.NewTimer(timeout)
-	defer deadline.Stop()
-	ticker := time.NewTicker(10 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		running, err := alive(processGroupID)
-		if err != nil {
-			return fmt.Errorf("check owned process group %d after SIGKILL: %w", processGroupID, err)
-		}
-		if !running {
-			return nil
-		}
-		select {
-		case <-ticker.C:
-		case <-deadline.C:
-			return fmt.Errorf("reap owned process group %d: timeout after %s", processGroupID, timeout)
-		}
-	}
 }
 
 func waitForProcessReap(processGroupID int, waitDone <-chan error, timeout time.Duration) error {

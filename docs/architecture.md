@@ -265,7 +265,7 @@ The first shutdown caller performs this sequence while concurrent callers wait:
 2. Ask the instance-scoped daemon to stop while its private registry is still readable.
 3. Send `SIGTERM` to the recorded owned process group using the negative process-group ID.
 4. Wait for bridge exit for a configurable graceful interval. The default is 5 seconds. A shorter caller deadline shortens this wait.
-5. If any owned process remains or the grace interval expires, send `SIGKILL` to the same recorded process group.
+5. If the bridge leader has not been reaped and the group remains alive or the grace interval expires, send `SIGKILL` to the same recorded process group.
 6. Await the single existing `cmd.Wait` result channel for a bounded reap interval. The default is 5 seconds. Never call `Wait` twice and never wait indefinitely.
 7. Remove owned socket files and other instance runtime files, then remove the owned runtime directory when safe. Bound repeated path cleanup by the existing `CleanupTimeout`, whose current default is 30 seconds.
 8. If the SDK created the ephemeral `JCODE_HOME`, remove that owned home after process termination attempts. If the caller supplied a persistent home, retain the home and durable state while removing only this instance's owned runtime paths.
@@ -274,6 +274,8 @@ The first shutdown caller performs this sequence while concurrent callers wait:
 The default maximum after shutdown begins is therefore the 5-second TERM grace, the 5-second reap bound, and at most the configured 30-second owned-path cleanup bound. Signaling and daemon-stop requests must not add an unbounded wait. Configuration may reduce these values. Non-positive configuration selects finite defaults rather than disabling a bound.
 
 If the caller context is already done or expires during grace, shutdown escalates immediately to `SIGKILL`. Final kill, bounded reap, and safe path cleanup still run under the instance's finite internal caps so context cancellation cannot intentionally leave an orphan. The returned error retains the caller context cause and any cleanup failure.
+
+The recorded numeric process-group ID is actionable only while the bridge leader's identity remains unambiguous. Once the single `cmd.Wait` result reports that the leader was reaped, the SDK performs no further liveness check or signal against that process-group ID because Linux may reuse it for an unrelated group. Supported private bridges therefore keep the leader alive until descendants have exited or group-wide TERM/KILL escalation completes. A bridge-exit fixture must arrange for any transport-holding descendant to terminate through its own supervision rather than require unsafe post-reap group signaling.
 
 ### Owned-path safety
 
