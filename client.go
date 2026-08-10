@@ -183,7 +183,7 @@ func (c *Client) setInstance(instance Instance) {
 func (c *Client) DetachInstance() (Instance, bool) {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
-	if c.instance == nil {
+	if c.instance == nil || c.state == StateClosing || c.state == StateClosed {
 		return nil, false
 	}
 	instance := c.instance
@@ -702,7 +702,12 @@ func (c *Client) resume(ctx context.Context) error {
 
 func (c *Client) closeWith(err error) {
 	c.closeOnce.Do(func() {
-		c.setState(StateClosing)
+		c.stateMu.Lock()
+		c.state = StateClosing
+		instance := c.instance
+		c.instance = nil
+		c.stateMu.Unlock()
+		c.emit(Observation{Kind: "state", State: StateClosing})
 		c.closeErr = err
 		close(c.closed)
 		c.transportMu.RLock()
@@ -724,9 +729,6 @@ func (c *Client) closeWith(err error) {
 		}
 		c.subsMu.Unlock()
 		c.setState(StateClosed)
-		c.stateMu.RLock()
-		instance := c.instance
-		c.stateMu.RUnlock()
 		if instance != nil {
 			_ = instance.Shutdown()
 		}
