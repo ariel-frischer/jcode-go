@@ -82,7 +82,7 @@ func TestClientCloseAndDetachSerializeInstanceOwnership(t *testing.T) {
 		instance := &trackingInstance{}
 		client := &Client{
 			state: StateConnected, closed: make(chan struct{}),
-			pending: make(map[uint64]chan protocol.ServerFrame),
+			pending: make(map[uint64]pendingRequest),
 			subs:    make(map[uint64]*subscriber), instance: instance,
 		}
 		start := make(chan struct{})
@@ -122,7 +122,7 @@ func TestClientCloseClaimsInstanceBeforeRunningShutdown(t *testing.T) {
 	instance := &blockingTrackingInstance{started: make(chan struct{}), release: make(chan struct{})}
 	client := &Client{
 		state: StateConnected, closed: make(chan struct{}),
-		pending: make(map[uint64]chan protocol.ServerFrame),
+		pending: make(map[uint64]pendingRequest),
 		subs:    make(map[uint64]*subscriber), instance: instance,
 	}
 	closed := make(chan error, 1)
