@@ -17,12 +17,19 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 )
 
 const instanceHomePrefix = "jcode-sdk-instance-"
+
+const (
+	allowLegacyCodexAuthEnv    = "JCODE_ALLOW_CODEX_LEGACY_AUTH"
+	legacyCodexAuthSource      = ".codex/auth.json"
+	legacyCodexAuthDestination = "external/.codex/auth.json"
+)
 
 // LaunchErrorCode identifies the phase which failed while starting an
 // instance. Callers can use errors.As to inspect a LaunchError without parsing
@@ -227,7 +234,9 @@ func launchInstanceWithObserver(options LaunchOptions, observer Observer) (Insta
 		_ = os.Remove(filepath.Join(runtimeDir, name))
 	}
 	if o.inheritLogins() {
-		if err := inheritCredentials(userJcodeHome(), home); err != nil {
+		var err error
+		o, err = inheritLaunchCredentials(o, home)
+		if err != nil {
 			cleanupOnError()
 			return nil, &LaunchError{Code: LaunchStartupFailed, Err: err}
 		}
@@ -411,6 +420,29 @@ var credentialFiles = map[string]bool{
 	"config.toml": true,
 }
 
+func inheritLaunchCredentials(options LaunchOptions, privateHome string) (LaunchOptions, error) {
+	inherited, err := InheritCredentials(userJcodeHome(), privateHome)
+	if err != nil {
+		return options, err
+	}
+	if !slices.Contains(inherited, legacyCodexAuthDestination) {
+		return options, nil
+	}
+	options.Env = cloneEnvironment(options.Env)
+	if _, explicit := options.Env[allowLegacyCodexAuthEnv]; !explicit {
+		options.Env[allowLegacyCodexAuthEnv] = "1"
+	}
+	return options, nil
+}
+
+func cloneEnvironment(source map[string]string) map[string]string {
+	cloned := make(map[string]string, len(source)+1)
+	for key, value := range source {
+		cloned[key] = value
+	}
+	return cloned
+}
+
 // InheritCredentials shares rotating auth files and copies mutable config.
 func InheritCredentials(fromHome, toHome string) ([]string, error) {
 	if filepath.Clean(fromHome) == filepath.Clean(toHome) {
@@ -439,12 +471,36 @@ func InheritCredentials(fromHome, toHome string) ([]string, error) {
 		}
 		inherited = append(inherited, name)
 	}
+	legacyInherited, err := inheritLegacyCodexAuth(fromHome, toHome)
+	if err != nil {
+		return nil, err
+	}
+	if legacyInherited {
+		inherited = append(inherited, legacyCodexAuthDestination)
+	}
 	return inherited, nil
 }
 
-func inheritCredentials(fromHome, toHome string) error {
-	_, err := InheritCredentials(fromHome, toHome)
-	return err
+func inheritLegacyCodexAuth(fromHome, toHome string) (bool, error) {
+	source := filepath.Join(filepath.Dir(fromHome), legacyCodexAuthSource)
+	info, err := os.Lstat(source)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("inspecting legacy Codex auth: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return false, fmt.Errorf("legacy Codex auth must be a regular file: %s", source)
+	}
+	destination := filepath.Join(toHome, legacyCodexAuthDestination)
+	if err := ensurePrivateDirectory(filepath.Dir(destination)); err != nil {
+		return false, fmt.Errorf("creating private legacy Codex auth directory: %w", err)
+	}
+	if err := copyOwnerOnly(source, destination); err != nil {
+		return false, fmt.Errorf("copying legacy Codex auth: %w", err)
+	}
+	return true, nil
 }
 
 func copyOwnerOnly(from, to string) error {
