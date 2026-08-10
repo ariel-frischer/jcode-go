@@ -1,0 +1,323 @@
+constitution:
+  project_name: "jcode-go"
+  version: "1.0.0"
+  ratified: "2026-08-10"
+  last_amended: "2026-08-10"
+
+preamble: |
+  jcode-go is the Go SDK for the Jcode harness API. This constitution defines the binding
+  contracts for the Linux private-runtime stability program so protocol compatibility,
+  lifecycle ownership, concurrency behavior, security, and orchestration boundaries remain
+  explicit while the SDK evolves additively.
+
+principles:
+  - name: "Protocol v1 Compatibility and Minimal Additive APIs"
+    id: "PRIN-001"
+    category: "architecture"
+    priority: "NON-NEGOTIABLE"
+    description: |
+      Protocol v1 raw APIs, handshake behavior, request correlation, subscriptions,
+      forward-compatible event decoding, and documented ownership semantics remain
+      supported. Public changes must be minimal, additive, Go-idiomatic, and must not
+      change existing signatures or behavior unless an approved Bead explicitly changes
+      the contract. New turn lifecycle functionality must not remove or replace raw
+      Request, Notify, Subscribe, Session.Send, or Session.Events access.
+    rationale: "Preserves existing SDK consumers while allowing the stability program to add an owned turn lifecycle."
+    enforcement:
+      - mechanism: "Compatibility tests"
+        description: "Focused tests preserve existing Session.Send, Session.Events, Client.Close, Instance, and raw protocol behavior."
+      - mechanism: "API and architecture review"
+        description: "Every exported change is checked for additive shape, Go idioms, protocol v1 compatibility, and documented ownership impact."
+      - mechanism: "Approved Bead contract"
+        description: "Any intentional compatibility change requires an approved Bead with explicit impact and acceptance criteria."
+    exceptions:
+      - "An approved Bead may define a deliberate contract change after compatibility and migration impact are documented."
+
+  - name: "Explicit Lifecycle Ownership and Working Directories"
+    id: "PRIN-002"
+    category: "architecture"
+    priority: "NON-NEGOTIABLE"
+    description: |
+      Each lifecycle responsibility has one owner. Client owns protocol connection,
+      request correlation, subscriptions, and transport failure; the Turn or session
+      lifecycle owns acceptance, ordered events, server cancellation, and terminal
+      outcome; Instance owns only the private processes and paths it created or claimed;
+      and the orchestrator owns workflow policy and durable effects. Connect is
+      non-owning, Launch attaches private ownership, and DetachInstance transfers that
+      ownership exactly once. A private agent must run in the explicit absolute working
+      directory supplied by its caller for both LaunchOptions.WorkingDir and the session
+      working directory.
+    rationale: "Prevents double shutdown, orphaned resources, accidental shared-runtime termination, and execution in the wrong worktree."
+    enforcement:
+      - mechanism: "Ownership transfer tests"
+        description: "Tests cover non-owning Connect, attached Launch cleanup, one-time DetachInstance transfer, idempotent shutdown, and close races."
+      - mechanism: "Linux public-path acceptance"
+        description: "Acceptance tests prove the launched agent observes the caller-selected working directory and that only recorded resources are cleaned."
+      - mechanism: "Code review against architecture.md"
+        description: "Lifecycle changes identify one sole owner and reject cross-component supervision or cleanup duplication."
+    exceptions:
+      - "An empty LaunchOptions.WorkingDir retains its source-compatible current-directory fallback, but orchestrated execution and acceptance tests must use an explicit absolute path."
+      - "Connect has no process ownership and therefore cannot shut down a shared runtime."
+
+  - name: "First-Terminal-Wins Immutable Outcomes"
+    id: "PRIN-003"
+    category: "architecture"
+    priority: "NON-NEGOTIABLE"
+    description: |
+      Every owned Turn records exactly one immutable typed terminal result. The first
+      terminal signal wins through one synchronization point or an equivalent atomic
+      compare-and-set, and every later wait returns the same stored result. Completion,
+      explicit cancellation, local lifecycle cancellation or deadline, provider and
+      protocol failures, overflow, bridge exit, transport disconnect, and client close
+      are distinct semantic terminal classes. Acceptance and a successful cancellation
+      request are not terminal by themselves.
+    rationale: "Makes concurrent lifecycle races deterministic and gives callers a stable result without parsing messages or frames."
+    enforcement:
+      - mechanism: "Typed outcome contract"
+        description: "Public results expose a stable kind and wrapped cause suitable for errors.Is and errors.As."
+      - mechanism: "Deterministic race tests"
+        description: "Tests force conflicting terminal signals and verify that the first serialized winner remains authoritative."
+      - mechanism: "Immutable result storage"
+        description: "Implementation review verifies one terminal synchronization point and identical results for all later Wait calls."
+    exceptions: []
+
+  - name: "Distinct Cancellation and Unknown-Outcome Semantics"
+    id: "PRIN-004"
+    category: "architecture"
+    priority: "MUST"
+    description: |
+      Local lifecycle context cancellation is distinct from server-side turn
+      cancellation. Turn.Cancel constructs the protocol cancellation request inside the
+      SDK, sends it at most once, shares the first concurrent attempt and result, and
+      does not retry after timeout or disconnect. Requests and mutations are never
+      automatically replayed after timeout or disconnect because their server-side
+      result may be unknown. A wait context may interrupt only that wait and must not
+      terminate a live turn.
+    rationale: "Prevents duplicate mutations and preserves the difference between abandoning a local wait and stopping server work."
+    enforcement:
+      - mechanism: "Cancellation behavior tests"
+        description: "Focused and race-enabled tests cover lifecycle cancellation, explicit cancellation, duplicate calls, cancellation races, timeout, and disconnect."
+      - mechanism: "Raw API compatibility tests"
+        description: "Session.Send retains acceptance-only and notification-only semantics without implicit server cancellation or replay."
+      - mechanism: "Documentation review"
+        description: "Public documentation states when an outcome is unknown and which context controls lifecycle versus an individual wait."
+    exceptions:
+      - "Callers may implement an explicit retry policy for idempotent reads after refreshing state; the SDK does not automatically replay mutating operations."
+
+  - name: "Redacted Typed Errors and Observability"
+    id: "PRIN-005"
+    category: "security"
+    priority: "NON-NEGOTIABLE"
+    description: |
+      Errors and lifecycle observations must expose stable typed classifications and
+      wrapped causes without requiring callers to parse human-readable messages or raw
+      protocol frames. No public error, log, observation, test output, or acceptance
+      receipt may include prompts, credentials, tokens, response content, raw frames, or
+      private session identifiers. Provider codes and bounded phase metadata may be
+      retained when they are safe and useful for diagnosis.
+    rationale: "Makes failures machine-actionable while preventing sensitive data from leaking through diagnostics or validation."
+    enforcement:
+      - mechanism: "Redaction tests"
+        description: "Observation and error tests assert that sensitive fields and identifiers are absent from emitted output."
+      - mechanism: "Typed inspection tests"
+        description: "Tests verify stable kinds, errors.Is, and errors.As behavior for protocol, transport, provider, cancellation, and cleanup failures."
+      - mechanism: "Output review"
+        description: "Live or provider-backed validation is explicitly gated and must use redacted logs without credentials or private responses."
+    exceptions:
+      - "Synthetic fixtures may contain non-sensitive labels needed to identify a deterministic test phase, but may not contain real credentials, prompts, responses, or private identifiers."
+
+  - name: "Race-Safe Concurrency and Subscription Isolation"
+    id: "PRIN-006"
+    category: "quality"
+    priority: "NON-NEGOTIABLE"
+    description: |
+      The client reader must never block on a slow subscriber. Subscription queues are
+      bounded, and overflow terminates only the affected subscription or turn. A turn
+      has exactly one internal dispatcher reading its underlying subscription, only one
+      goroutine may call Turn.Next, cancellation produces at most one protocol write,
+      and concurrent shutdown callers share one completed result. Public methods remain
+      safe to race with Client.Close and must return a typed terminal or closure error
+      rather than block forever or panic on closed channels.
+    rationale: "Maintains liveness and deterministic ownership under concurrent event delivery, cancellation, closure, and shutdown."
+    enforcement:
+      - mechanism: "Focused concurrency tests"
+        description: "Tests cover bounded queues, isolated overflow, dispatcher ordering, close races, cancellation serialization, and shared shutdown results."
+      - mechanism: "Race-enabled test runs"
+        description: "Lifecycle and process-supervision packages are run with the Go race detector whenever shared concurrency changes."
+      - mechanism: "Synchronization review"
+        description: "Code review checks channel closure, waiters, ownership transfer, and first-terminal synchronization for deadlocks and data races."
+    exceptions:
+      - "Turn.Next is intentionally single-consumer; callers must serialize calls to one turn as documented."
+
+  - name: "Bounded and Owned Linux Private-Runtime Cleanup"
+    id: "PRIN-007"
+    category: "architecture"
+    priority: "MUST"
+    description: |
+      Linux private-instance shutdown is finite, orphan-free, and limited to recorded
+      ownership. The bridge runs in an owned process group; shutdown uses bounded daemon
+      stop, SIGTERM grace, SIGKILL escalation, one bounded reap, and removal of owned
+      socket, runtime, and ephemeral-home paths. It must never signal PID 0, PID 1, an
+      unrecorded process group, or remove paths outside the recorded ownership set. The
+      SDK must not scan the system for unrelated Jcode processes, and this program does
+      not add or expand Windows supervision.
+    rationale: "Ensures cancellation and shutdown terminate private work without hanging or damaging shared user state."
+    enforcement:
+      - mechanism: "Controlled Linux process tests"
+        description: "Tests cover cooperating and TERM-ignoring descendants, KILL escalation, bounded reap, repeated shutdown, and orphan absence."
+      - mechanism: "Owned-path safety tests"
+        description: "Tests verify cleanup uses recorded paths, preserves persistent homes, and never removes shared or unrelated resources."
+      - mechanism: "Platform scope review"
+        description: "Implementation and acceptance review reject Windows parity, system-wide process discovery, or unbounded waits in this stability program."
+    exceptions:
+      - "A caller deadline may shorten the graceful phase, but cannot disable final kill, bounded reap, or best-effort owned-path cleanup."
+      - "Missing owned processes and ESRCH are successful cleanup conditions."
+
+  - name: "Focused, Race, and Public-Path Validation"
+    id: "PRIN-008"
+    category: "quality"
+    priority: "MUST"
+    description: |
+      Every changed behavior and failure path receives focused tests before handoff.
+      Shared concurrency and lifecycle changes also receive race-enabled focused tests.
+      Integrated SDK work must pass go test ./... -count=1, git diff --check, and the
+      applicable Linux public-path acceptance coverage for working directory, turn
+      acceptance, event ordering, cancellation, failure classification, bounded
+      shutdown, and owned-resource cleanup. Unit fixtures are necessary for deterministic
+      failures but are not the sole completion evidence for the public SDK path.
+    rationale: "Connects implementation claims to representative evidence without substituting narrow mocks for lifecycle acceptance."
+    enforcement:
+      - mechanism: "Repository validation contract"
+        description: "Focused tests run first, followed by race-enabled lifecycle tests when applicable and the full Go suite before handoff."
+      - mechanism: "Acceptance checklist"
+        description: "Linux public-path checks cover explicit cwd, stalled turns, cleanup bounds, process ownership, and typed terminal outcomes."
+      - mechanism: "Handoff evidence"
+        description: "Workers report changed files, focused and full validation, risks, and follow-up while preserving the orchestrator handoff boundary."
+    exceptions:
+      - "Real OAuth or provider-backed smoke tests are optional and require explicit approval; they must be redacted and must not print credentials or private identifiers."
+      - "Documentation-only constitution changes do not require Go source tests, but must pass artifact validation and git diff --check."
+
+  - name: "Explicit Orchestrator Boundary and Execution Policy"
+    id: "PRIN-009"
+    category: "process"
+    priority: "NON-NEGOTIABLE"
+    description: |
+      jcode-go owns the SDK lifecycle contract and private-runtime implementation.
+      The orchestrator owns worktree selection, stage policy, retries, gates, canonical
+      validation, integration, provider mutation, durable receipts, run cancellation,
+      and cleanup orchestration. Execution modes, providers, and models must be explicit,
+      previewed, sealed, and recorded; no mode, provider, model, or implementation path
+      may silently fall back. A worker edits only its assigned scope, runs validation,
+      commits its scoped changes, and reports a handoff. The root coordinator alone owns
+      merge, push, Bead mutation, cross-Bead ordering, worktree cleanup, and final
+      completion.
+    rationale: "Keeps SDK lifecycle guarantees separate from workflow policy and prevents hidden side effects or ambiguous execution paths."
+    enforcement:
+      - mechanism: "Orchestrator handoff rules"
+        description: "Worker checklists and AGENTS.md prohibit merge, push, Bead mutation, worktree management, provider configuration changes, and nested delegation by workers."
+      - mechanism: "Explicit mode checks"
+        description: "Integration validation verifies execution mode and provider/model choices are recorded and that no silent fallback occurs."
+      - mechanism: "Bead ownership review"
+        description: "Each implementation responsibility maps to an approved Bead with stated non-goals and dependencies."
+    exceptions:
+      - "The root coordinator may authorize integration actions at the declared handoff boundary; workers do not acquire those permissions implicitly."
+
+sections:
+  - name: "Compatibility and Public API"
+    content: |
+      Protocol v1 raw access and existing typed helpers remain supported. Additions must
+      be minimal and additive, preserve existing signatures and semantics, and document
+      any approved compatibility change before implementation.
+
+  - name: "Lifecycle Ownership"
+    content: |
+      Client, Turn, Instance, and the orchestrator each own a distinct responsibility.
+      Connect is non-owning, launched clients own attached private instances until an
+      exactly-once DetachInstance transfer, and private agents run in the caller-selected
+      worktree and session directory.
+
+  - name: "Concurrency and Failure Semantics"
+    content: |
+      One immutable terminal outcome wins per turn. Cancellation, acceptance, transport
+      failure, overflow, closure, and shutdown are race-safe, typed, and non-replayed
+      where a mutation's server-side result may be unknown.
+
+  - name: "Linux Scope and Resource Safety"
+    content: |
+      The stability program is Linux-only. Private shutdown uses finite process-group
+      supervision and recorded-path cleanup. It does not add Windows implementation,
+      system-wide process discovery, or unbounded waits.
+
+  - name: "Security and Observability"
+    content: |
+      Public errors and lifecycle observations are redacted and machine-actionable.
+      Diagnostics may identify safe lifecycle phases and stable provider codes, but never
+      expose prompts, credentials, response content, raw frames, or private identifiers.
+
+  - name: "Validation and Acceptance"
+    content: |
+      Run focused tests first, race-enabled lifecycle tests for shared concurrency, and
+      go test ./... -count=1 before handoff. Acceptance must exercise the public Linux
+      path; real OAuth validation is separately gated and redacted.
+
+  - name: "Orchestration and Change Control"
+    content: |
+      Work is organized through approved Beads and explicit responsibility boundaries.
+      Workers stop at the orchestrator handoff, while the root coordinator owns merge,
+      push, Bead mutation, ordering, cleanup, and final completion. No automatic mode,
+      provider, model, or fallback policy is introduced by the SDK.
+
+governance:
+  amendment_process:
+    - step: 1
+      action: "Propose the amendment in an approved Bead or pull request"
+      requirements: "State the affected principle, rationale, compatibility impact, ownership impact, non-goals, and acceptance evidence."
+    - step: 2
+      action: "Review the proposal against AGENTS.md, docs/architecture.md, docs/sdk-stability-plan.md, and existing public APIs"
+      requirements: "Confirm that protocol v1 compatibility, Linux-only scope, lifecycle ownership, redaction, and orchestrator boundaries remain explicit."
+    - step: 3
+      action: "Obtain maintainer and coordinator approval"
+      requirements: "Changes to NON-NEGOTIABLE principles require explicit discussion and an approved Bead; workers may not self-approve or integrate them."
+    - step: 4
+      action: "Update, validate, and record the constitution"
+      requirements: "Bump the semantic version, update last_amended and sync_impact, run autospec artifact validation, run applicable repository checks, and commit only explicit files."
+
+  versioning_policy: |
+    Constitution versions follow semantic versioning. MAJOR changes alter a binding
+    contract or invalidate previously compliant implementation. MINOR adds a principle or
+    expands binding guidance without invalidating existing compliant code. PATCH clarifies
+    wording or metadata without changing required behavior.
+
+  compliance_review:
+    frequency: "At each SDK stability wave, before release, and at least quarterly"
+    process: "Compare implementation, tests, public documentation, active Beads, and acceptance evidence with every principle and record any drift in the owning Bead."
+
+  rules:
+    - "Protocol v1, public API, and ownership changes require an approved Bead with explicit acceptance criteria."
+    - "Workers must stop at the orchestrator handoff; only the root coordinator may merge, push, mutate Beads, manage worktrees, or complete integration."
+    - "Live OAuth or provider-backed validation requires explicit approval and redacted output."
+    - "Linux-only scope is binding for this stability program; Windows expansion requires a separate approved change."
+    - "No automatic provider, model, execution-mode, retry, or fallback policy may be hidden inside the SDK."
+    - "Emergency amendments require post-hoc maintainer review, versioning, and documentation of the reason and impact."
+
+sync_impact:
+  version_change: "new -> 1.0.0"
+  modified_principles: []
+  added_sections:
+    - "Compatibility and Public API"
+    - "Lifecycle Ownership"
+    - "Concurrency and Failure Semantics"
+    - "Linux Scope and Resource Safety"
+    - "Security and Observability"
+    - "Validation and Acceptance"
+    - "Orchestration and Change Control"
+  removed_sections: []
+  templates_requiring_updates: []
+  follow_up_todos: []
+
+_meta:
+  version: "1.0.0"
+  generator: "autospec"
+  generator_version: "autospec dev"
+  created: "2026-08-10T19:45:31Z"
+  artifact_type: "constitution"

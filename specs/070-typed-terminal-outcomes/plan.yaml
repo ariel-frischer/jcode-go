@@ -1,0 +1,396 @@
+plan:
+  branch: "agent/jcode-go-70h-4"
+  created: "2026-08-10"
+  spec_path: "specs/070-typed-terminal-outcomes/spec.yaml"
+
+summary: |
+  Finalize the existing additive Turn lifecycle rather than introducing a second
+  supervisor or public wrapper type. Export stable TurnResultKind string constants
+  preserving completed, canceled, lifecycle_canceled, lifecycle_deadline_exceeded,
+  and provider_error, then add protocol_error, subscriber_overflow, bridge_exited,
+  transport_disconnected, and client_closed. Keep TurnResult as the public stable
+  kind plus error cause surface and make every producer commit through the existing
+  locked first-terminal path.
+
+  Reuse EventError, context causes, ErrSubscriberOverflow, ErrDisconnected, and
+  ErrClosed. Add only the minimum sentinels needed for explicit server cancellation,
+  sanitized protocol failure, and positive owned-bridge exit evidence. Mark the
+  internal Turn subscription so ordinary disconnect terminates owned turns without
+  closing raw subscriptions, and fan out a private attached-instance bridge-exit
+  signal from the existing process wait without changing Instance or Windows
+  supervision. Preserve raw Session.Send, Session.Events, protocol v1, explicit
+  reconnect, ownership, and redaction contracts. Implement tests first, then focused
+  race and compatibility coverage, README and architecture contract updates, and
+  full validation. This planning run writes only this artifact and does not commit
+  or mutate Beads.
+
+technical_context:
+  language: "Go 1.23"
+  framework: "None"
+  primary_dependencies:
+    - name: "Go standard library"
+      version: "1.23"
+      purpose: "Context causes, errors.Is/errors.As, synchronization, channels, and testing for the existing SDK lifecycle."
+    - name: "github.com/ariel-frischer/jcode-go/protocol"
+      version: "module-local protocol v1"
+      purpose: "Reuse protocol framing sentinels, typed EventError inputs, and forward-compatible event decoding."
+    - name: "github.com/ariel-frischer/jcode-go/transport"
+      version: "module-local transport"
+      purpose: "Reuse transport lifecycle and controlled pipe fixtures without changing raw transport ownership."
+  storage: "None"
+  testing:
+    framework: "Go testing package"
+    approach: "Test-first table and concurrency tests in existing turn, client, validation, launch, and ownership test files; focused normal tests, focused -race tests, then go test ./... -count=1."
+  target_platform: "Linux private-runtime lifecycle and all existing SDK protocol compatibility paths; no Windows supervision changes"
+  project_type: "library"
+  performance_goals: "One immutable terminal result per Turn, bounded subscription delivery, prompt waiter wake-up, no blocked client reader, no leaked lifecycle goroutines, and no automatic retry, replay, or reconnect."
+  constraints:
+    - "Keep the public change additive and Go-idiomatic; preserve existing method signatures and result string values."
+    - "Use exported TurnResultKind constants and TurnResult.Kind plus TurnResult.Err; do not add speculative public wrapper types."
+    - "Reuse EventError, context causes, ErrSubscriberOverflow, ErrDisconnected, and ErrClosed wherever they are the canonical cause."
+    - "Add only minimal sentinels for explicit server cancellation, protocol failure, and owned bridge exit."
+    - "Route every terminal producer through the existing locked first-terminal synchronization; no producer may write terminal state directly."
+    - "Use an internal turn-only disconnect path so raw subscriptions remain available for caller-controlled explicit reconnect."
+    - "Use positive attached-instance bridge ownership evidence and a private exit signal without changing Instance or process_windows.go."
+    - "Keep unsafe provider and transport text out of owned-turn causes and observations while preserving established raw API behavior."
+    - "Do not add retries, automatic reconnect, replay, provider fallback, generic lifecycle frameworks, or Windows implementation work."
+    - "Planning stage remains on the assigned branch, writes only the fixed feature directory, does not commit, and does not mutate Beads."
+  scale_scope: "One in-process Client with bounded event queues and one owned Turn per send_message operation; no persistence or distributed coordination."
+
+constitution_check:
+  constitution_path: ".autospec/constitution.yaml"
+  gates:
+    - name: "Protocol v1 Compatibility and Minimal Additive APIs"
+      status: "PASS"
+      notes: "Adds only exported result constants and minimal sentinels, keeps TurnResult fields and existing signatures, and leaves Request, Notify, Subscribe, Session.Send, Session.Events, and forward-compatible decoding available."
+    - name: "Explicit Lifecycle Ownership and Working Directories"
+      status: "PASS"
+      notes: "Client remains the owner of transport and subscription failure, Turn remains the owner of terminal results, and bridge exit evidence is observed only from an attached SDK-owned instance."
+    - name: "First-Terminal-Wins Immutable Outcomes"
+      status: "PASS"
+      notes: "All completion, cancellation, lifecycle, provider, protocol, overflow, bridge, disconnect, and close producers use the existing locked first-terminal commit path and repeated Wait returns the stored value."
+    - name: "Distinct Cancellation and Unknown-Outcome Semantics"
+      status: "PASS"
+      notes: "Explicit server cancellation uses one shared request and a non-terminal request acknowledgement, lifecycle causes never send protocol cancel, wait contexts affect only their call, and no replay is added."
+    - name: "Redacted Typed Errors and Observability"
+      status: "PASS"
+      notes: "Provider results retain safe EventError codes without unsafe messages, protocol and transport details are sanitized for owned turns, and raw API behavior is not broadened."
+    - name: "Race-Safe Concurrency and Subscription Isolation"
+      status: "PASS"
+      notes: "Turn-only disconnect and overflow close only the affected owned subscription, cancellation remains single-write, close is idempotent, and focused race tests cover conflicting producers and waiter liveness."
+    - name: "Bounded and Owned Linux Private-Runtime Cleanup"
+      status: "PASS"
+      notes: "The plan reuses existing Linux process ownership and wait channels only to publish positive exit evidence; it does not change bounded shutdown, owned-path cleanup, or Windows supervision."
+    - name: "Focused, Race, and Public-Path Validation"
+      status: "PASS"
+      notes: "Tests are planned before implementation, focused normal and race suites run before the full Go suite, and git diff --check plus explicit-file landing are required."
+    - name: "Explicit Orchestrator Boundary and Execution Policy"
+      status: "PASS"
+      notes: "The plan contains no provider, model, retry, fallback, Bead, merge, or worktree mutation; this run remains a planning-only handoff on the assigned branch."
+
+research_findings:
+  decisions:
+    - topic: "Stable public terminal taxonomy"
+      decision: "Promote the existing TurnResultKind values to exported constants named TurnResultCompleted, TurnResultCanceled, TurnResultLifecycleCanceled, TurnResultLifecycleDeadlineExceeded, and TurnResultProviderError, and add TurnResultProtocolError, TurnResultSubscriberOverflow, TurnResultBridgeExited, TurnResultTransportDisconnected, and TurnResultClientClosed."
+      rationale: "The values already established in the current Turn implementation remain unchanged, callers can switch on stable exported identifiers, and no wrapper or string parsing is needed."
+      alternatives_considered:
+        - "Add a public TerminalError or outcome wrapper struct, which is unnecessary because TurnResult.Kind and TurnResult.Err already provide the required inspection surface."
+        - "Expose only strings or require callers to parse error messages, which is incompatible with the typed contract."
+    - topic: "Cause and sentinel policy"
+      decision: "Reuse EventError with only its safe provider code, context.Cause with context.Err fallback, ErrSubscriberOverflow, ErrDisconnected, and ErrClosed. Add the minimal exported sentinels ErrTurnCanceled, ErrProtocolFailure, and ErrBridgeExited; protocol results also preserve safe protocol package sentinels through errors.Is when available."
+      rationale: "This gives every required class a stable inspectable cause while avoiding duplicated error wrapper types and prevents unsafe provider, transport, and frame text from entering owned-turn diagnostics."
+      alternatives_considered:
+        - "Create a typed public cause hierarchy for every terminal class, which adds API surface without improving errors.Is/errors.As for the required cases."
+        - "Reuse raw transport or provider error strings, which violates redaction and makes classification unstable."
+    - topic: "Single terminal synchronization point"
+      decision: "Refactor finishTurnDone and overflow handling to delegate the terminal state/result/notification commit to the existing Turn mutex-protected first-terminal helper; dispatch errors, lifecycle watch, client signals, and bridge signals use that same helper."
+      rationale: "The current Turn already owns the lock and terminalDone channel. Centralizing all producers makes first serialized signal authoritative and prevents late completion, cancellation, close, or overflow paths from replacing the result."
+      alternatives_considered:
+        - "Add a separate atomic result or sync.Once alongside the current lock, which would create two ownership mechanisms and complicate event-buffer ordering."
+        - "Use wall-clock precedence or goroutine arrival order without a shared commit point, which is nondeterministic."
+    - topic: "Ordinary disconnect compatibility"
+      decision: "Tag the private subscription created by StartTurn as turn-only. On ordinary disconnect, fail only turn-only subscriptions with ErrDisconnected while leaving raw subscriptions open for the existing explicit reconnect path; terminal protocol failures and Client.Close retain their existing broad closure semantics, with owned-turn causes sanitized before publication."
+      rationale: "An owned Turn cannot safely resume or replay missed protocol v1 events, while raw subscriptions must retain caller-controlled reconnect compatibility."
+      alternatives_considered:
+        - "Close every subscription on EOF, which breaks raw explicit reconnect behavior."
+        - "Leave Turn subscriptions open until reconnect, which can block owned turns forever and falsely imply replayability."
+    - topic: "Positive owned bridge exit evidence"
+      decision: "Fan out the existing cmd.Wait result to a private buffered bridge-exit signal when the launched process starts, expose it only through a private method/type assertion on launchedInstance, and have the attached Client forward it to active turn-only subscriptions. Do not add a method to Instance or change process_unix.go/process_windows.go supervision."
+      rationale: "Only a launched client with an attached SDK-owned instance has positive process ownership evidence. A separate signal avoids consuming the shutdown wait channel and lets Client.Close or EOF win through the Turn commit point."
+      alternatives_considered:
+        - "Infer bridge exit from EOF, socket paths, provider text, or arbitrary PIDs, which is explicitly forbidden and misclassifies Connect clients."
+        - "Add BridgeExit to the exported Instance interface, which breaks external implementations."
+    - topic: "First-winner bridge and EOF races"
+      decision: "Publish a private bridge-exit failure carrying only ErrBridgeExited and let the Turn's existing locked commit decide whether bridge_exited or transport_disconnected wins. A late signal is ignored after the first result is stored."
+      rationale: "Positive evidence controls eligibility for bridge_exited, while the common terminal commit controls precedence and prevents retroactive upgrades."
+      alternatives_considered:
+        - "Upgrade a prior disconnect result when bridge evidence arrives later, which violates immutable first-terminal semantics."
+        - "Make bridge exit globally terminal for raw subscriptions, which violates raw subscription isolation."
+    - topic: "Compatibility and documentation scope"
+      decision: "Modify only current Go source and test files plus README.md and the existing architecture contract; do not add a new public result file, change Session.Send or Session.Events, or alter protocol and transport packages unless a focused cause-preservation adjustment is required."
+      rationale: "The current files already contain the Turn, Client, launcher, fixtures, and documentation surfaces, so the smallest additive change is easier to review and preserves ownership boundaries."
+      alternatives_considered:
+        - "Create a new lifecycle framework or broad Client rewrite, which is out of scope."
+        - "Add a new test package or generated API layer, which is unnecessary for the existing package conventions."
+
+data_model:
+  entities:
+    - name: "TurnResult"
+      description: "Immutable first-terminal record returned by one owned Turn."
+      fields:
+        - name: "Kind"
+          type: "TurnResultKind"
+          description: "Stable exported terminal classification."
+          constraints: "One of the ten required stable values; never changes after the first terminal commit."
+        - name: "Err"
+          type: "error"
+          description: "Typed or sentinel cause discoverable with errors.Is/errors.As."
+          constraints: "Nil only for successful completion; owned-turn errors contain no unsafe provider or transport text."
+      relationships:
+        - target: "Turn"
+          type: "one-to-one"
+          description: "Each Turn stores exactly one immutable result."
+    - name: "Turn"
+      description: "Owned session turn lifecycle with one internal dispatcher and one turn-only subscription."
+      fields:
+        - name: "terminal state"
+          type: "private synchronized state"
+          description: "Existing mutex-protected first-terminal flag, result, and terminalDone notification."
+          constraints: "All terminal producers commit through the existing lock; no second terminal transition."
+        - name: "cancel state"
+          type: "private sync.Once and state"
+          description: "Existing one-request explicit server cancellation coordination."
+          constraints: "Successful cancel acknowledgement is non-terminal; later server turn_done determines canceled."
+        - name: "lifecycle context"
+          type: "context.Context"
+          description: "Context supplied to StartTurn and watched for local cancellation or deadline."
+          constraints: "Never causes a protocol cancel request."
+      relationships:
+        - target: "Subscription"
+          type: "one-to-one"
+          description: "Turn owns its internal subscription until the first terminal result."
+        - target: "Client connection"
+          type: "many-to-one"
+          description: "Client supplies events and failure signals."
+    - name: "EventError"
+      description: "Existing typed provider failure cause from a harness error event."
+      fields:
+        - name: "Code"
+          type: "string"
+          description: "Safe stable provider or harness classification retained by owned turns."
+          constraints: "Preserved for errors.As; Message is omitted from owned-turn causes when unsafe."
+        - name: "Message"
+          type: "string"
+          description: "Existing raw event diagnostic text."
+          constraints: "Raw API behavior remains unchanged; owned-turn result construction must not copy unsafe text."
+      relationships:
+        - target: "TurnResult"
+          type: "one-to-many"
+          description: "Provider terminal results may wrap a safe EventError."
+    - name: "Subscription"
+      description: "Bounded event delivery unit isolated per consumer."
+      fields:
+        - name: "turn-only marker"
+          type: "private bool"
+          description: "Identifies the subscription owned by a Turn for ordinary disconnect failure."
+          constraints: "Not exposed in the raw API; raw subscriptions remain explicit-reconnect compatible."
+        - name: "terminal error"
+          type: "error"
+          description: "ErrSubscriberOverflow, ErrDisconnected, ErrClosed, protocol failure, or private bridge signal."
+          constraints: "Closed once with existing idempotent subscription synchronization."
+      relationships:
+        - target: "Client connection"
+          type: "many-to-one"
+          description: "Client reader publishes events and failure signals."
+    - name: "Client connection"
+      description: "Protocol v1 transport owner that detects framing failure, disconnect, close, and attached bridge evidence."
+      fields:
+        - name: "state"
+          type: "State"
+          description: "Existing connected, disconnected, reconnecting, closing, and closed lifecycle."
+          constraints: "Reconnect remains explicit and never revives an owned Turn."
+        - name: "attached instance"
+          type: "Instance"
+          description: "Existing private runtime ownership handle."
+          constraints: "Positive bridge evidence is available only while an SDK-owned instance is attached."
+        - name: "private bridge exit watcher"
+          type: "private channel/goroutine"
+          description: "Receives the private launchedInstance exit signal without changing Instance."
+          constraints: "Must stop or become harmless after Client.Close and must not block the reader."
+      relationships:
+        - target: "Owned bridge instance"
+          type: "zero-or-one"
+          description: "Launch attaches one owned instance; Connect attaches none."
+    - name: "Owned bridge instance"
+      description: "Existing Linux private process owner whose process exit can provide positive evidence for bridge_exited."
+      fields:
+        - name: "wait fanout"
+          type: "private buffered channels"
+          description: "Existing cmd.Wait result remains available to shutdown while a separate exit signal reaches the attached client."
+          constraints: "No Instance interface method, Windows supervision change, PID inference, or raw exit text exposure."
+      relationships:
+        - target: "Client connection"
+          type: "one-to-one"
+          description: "Only an attached launched client consumes the private signal."
+
+api_contracts:
+  endpoints:
+    - method: "Go API"
+      path: "Session.StartTurn"
+      description: "Creates an owned Turn after installing its internal subscription and successfully writing send_message."
+      request:
+        content_type: "in-process Go call"
+        body_schema: "context.Context lifecycleCtx, string content, SendOptions options; NoReply is rejected with ErrTurnNoReply before writing."
+      response:
+        success_code: 200
+        body_schema: "*Turn; returned before acceptance and terminal completion, with the lifecycle context owned by the Turn."
+      errors:
+        - code: 400
+          description: "ErrTurnNoReply or request encoding failure."
+        - code: 503
+          description: "Existing transport or client closure error while writing; no retry or replay."
+    - method: "Go API"
+      path: "Turn.Accepted"
+      description: "Waits for message_accepted or the first terminal failure; its context interrupts only this call."
+      request:
+        content_type: "in-process Go call"
+        body_schema: "context.Context waitCtx"
+      response:
+        success_code: 200
+        body_schema: "error; nil for acceptance, or the terminal cause when the Turn failed before acceptance."
+      errors:
+        - code: 408
+          description: "The wait context ended while the Turn remains live; the Turn is not terminated."
+    - method: "Go API"
+      path: "Turn.Next"
+      description: "Returns ordered typed Turn events from the single internal dispatcher."
+      request:
+        content_type: "in-process Go call"
+        body_schema: "context.Context waitCtx"
+      response:
+        success_code: 200
+        body_schema: "TypedEvent; event order and existing single-consumer contract are preserved."
+      errors:
+        - code: 409
+          description: "ErrSubscriberOverflow, ErrDisconnected, ErrClosed, ErrBridgeExited, or protocol/provider cause as applicable."
+        - code: 408
+          description: "The wait context ended without terminating the Turn."
+    - method: "Go API"
+      path: "Turn.Cancel"
+      description: "Shares one SDK-created protocol cancel request among concurrent callers; request success is non-terminal."
+      request:
+        content_type: "in-process Go call"
+        body_schema: "context.Context waitCtx"
+      response:
+        success_code: 200
+        body_schema: "error; shared cancellation request result, while Wait remains pending until server terminal event."
+      errors:
+        - code: 408
+          description: "Only this caller's cancellation wait was interrupted; no retry is attempted."
+    - method: "Go API"
+      path: "Turn.Wait"
+      description: "Returns the immutable first terminal TurnResult; its context interrupts only this wait before terminality."
+      request:
+        content_type: "in-process Go call"
+        body_schema: "context.Context waitCtx"
+      response:
+        success_code: 200
+        body_schema: "(TurnResult, error); terminal result has nil wait error, otherwise the second error is only this wait's context interruption."
+      errors:
+        - code: 408
+          description: "The wait context ended before a terminal result; a later Wait observes the same live Turn or stored result."
+
+project_structure:
+  documentation:
+    - path: "README.md"
+      description: "Document the final TurnResultKind constants, TurnResult cause inspection, lifecycle versus wait contexts, explicit cancel semantics, raw reconnect behavior, bridge evidence, redaction, and Linux-only ownership guidance with a minimal Turn example."
+    - path: "docs/architecture.md"
+      description: "Replace the .4 placeholder wording with the finalized exported result names, sentinel policy, turn-only disconnect rule, and private attached bridge-exit signal while preserving the existing ownership contract."
+  source_code:
+    - path: "turn.go"
+      description: "Export stable result constants, define minimal sentinels, sanitize and classify causes, and centralize every terminal producer through the existing locked first-terminal commit."
+    - path: "session.go"
+      description: "Keep StartTurn, Session.Send, and Session.Events signatures and semantics; ensure Turn construction marks its internal subscription without changing raw paths."
+    - path: "client.go"
+      description: "Add private turn-only subscription metadata and failure routing for ordinary disconnect, protocol failure, overflow, close, and attached bridge exit while preserving explicit reconnect for raw subscriptions."
+    - path: "launch.go"
+      description: "Fan out the existing bridge process wait to a private positive exit signal and attach a client watcher through a private type assertion without changing Instance or platform supervision interfaces."
+    - path: "process_unix.go"
+      description: "No planned implementation change; existing Linux process-group supervision remains the source of ownership and bounded cleanup evidence."
+    - path: "process_windows.go"
+      description: "No planned implementation change; Windows supervision remains explicitly out of scope."
+  tests:
+    - path: "turn_test.go"
+      description: "Test first-terminal result taxonomy, provider/protocol/lifecycle/cancel/overflow causes, repeated waits, method-context scope, cancellation serialization, redaction, and the full conflicting signal matrix under normal and race execution."
+    - path: "client_test.go"
+      description: "Test raw versus turn-only disconnect behavior, explicit reconnect compatibility, subscriber isolation, client close wake-up, and no blocked unrelated request or consumer."
+    - path: "client_validation_test.go"
+      description: "Test malformed, invalid, and oversized frames map to protocol_error for owned Turns while raw protocol error inspection remains compatible."
+    - path: "launch_test.go"
+      description: "Test private wait fanout and positive attached bridge-exit evidence without relying on error text or untrusted process identifiers."
+    - path: "ownership_test.go"
+      description: "Retain and extend Connect, Launch attachment, DetachInstance, close races, and idempotent ownership compatibility checks."
+
+implementation_phases:
+  - phase: 1
+    name: "Write the terminal contract tests first"
+    goal: "Make the required public taxonomy, cause inspection, immutability, race precedence, redaction, and compatibility behavior executable before implementation changes."
+    deliverables:
+      - "Add table-driven assertions for all ten stable TurnResultKind values and exact established result strings."
+      - "Add cause assertions for ErrTurnCanceled, ErrProtocolFailure plus protocol sentinels, ErrBridgeExited, EventError code inspection, context.Cause, ErrSubscriberOverflow, ErrDisconnected, and ErrClosed."
+      - "Add repeated Wait and forced first-terminal conflict tests covering completion versus cancellation, provider, protocol, overflow, transport, bridge, lifecycle, and close."
+      - "Add method-context tests proving Accepted, Next, Cancel, and Wait interruption does not terminate a live Turn, plus zero protocol cancel writes for lifecycle cancellation and deadline."
+      - "Add redaction assertions for unsafe provider and transport text and compatibility assertions for Session.Send, Session.Events, raw subscriptions, explicit reconnect, and ownership."
+  - phase: 2
+    name: "Finalize Turn result classification and first-terminal commit"
+    goal: "Implement the minimum public result and sentinel surface in current files while making the existing Turn lock the sole terminal authority."
+    dependencies:
+      - "Phase 1"
+    deliverables:
+      - "Promote and extend TurnResultKind constants with the exact stable values specified by the feature."
+      - "Add only the minimal explicit-cancel, protocol-failure, and bridge-exit sentinels, with errors.Is/errors.As-compatible wrapping."
+      - "Refactor turn_done, overflow, provider event, typed decode, subscription failure, lifecycle watcher, and write-failure paths so every terminal result uses the same locked first-terminal helper."
+      - "Map explicit cancel to canceled only after the server terminal event, preserve lifecycle context causes without protocol cancel, and sanitize protocol/provider/transport text for owned-turn errors."
+      - "Keep event queue ordering and acceptance behavior intact, including terminal event delivery and pre-acceptance terminal failures."
+  - phase: 3
+    name: "Connect client failure and owned bridge evidence"
+    goal: "Wake owned Turns for disconnect, protocol failure, overflow, close, and positive attached bridge exit without changing raw reconnect or Instance contracts."
+    dependencies:
+      - "Phase 2"
+    deliverables:
+      - "Mark StartTurn's private subscription as turn-only and route ordinary disconnect only to those subscriptions with ErrDisconnected; leave raw subscriptions open for explicit reconnect."
+      - "Preserve broad fatal protocol and Client.Close behavior, but publish sanitized causes to owned Turns and keep raw API behavior unchanged."
+      - "Fan out cmd.Wait through the existing launch wait path to a private buffered exit signal, expose it only through launchedInstance private evidence, and watch it only while attached to a launched Client."
+      - "Ensure bridge exit versus EOF and bridge exit versus Client.Close races are resolved by the shared Turn commit, with no late upgrade and no raw subscription termination from bridge evidence."
+      - "Run focused normal and race tests for subscription isolation, close idempotence, bridge evidence, wait fanout, and goroutine/channel liveness."
+  - phase: 4
+    name: "Compatibility documentation and public-path contract sync"
+    goal: "Make the additive behavior discoverable without changing existing APIs or expanding lifecycle scope."
+    dependencies:
+      - "Phase 3"
+    deliverables:
+      - "Update README.md with a concise StartTurn/Accepted/Next/Cancel/Wait example, stable kind handling, errors.Is/errors.As guidance, wait-versus-lifecycle contexts, explicit reconnect behavior, redaction, and Linux-only bridge ownership notes."
+      - "Update docs/architecture.md to record the finalized constant and sentinel names and the private turn-only/bridge-exit ownership rules."
+      - "Re-run existing Session.Send, Session.Events, raw Request/Notify/Subscribe, reconnect, Client.Close, Launch, DetachInstance, and Instance shutdown tests without signature or ownership changes."
+  - phase: 5
+    name: "Focused validation and explicit-file landing handoff"
+    goal: "Close the implementation feedback loop with bounded validation and preserve the orchestrator boundary."
+    dependencies:
+      - "Phase 4"
+    deliverables:
+      - "Run focused package tests first, then focused race-enabled lifecycle tests for the changed shared concurrency paths."
+      - "Run go test ./... -count=1, gofmt on changed Go files, and git diff --check; inspect for blocked consumers, leaked goroutines, panics, double closes, and unsafe output."
+      - "For the eventual implementation handoff, stage only explicitly changed files and create one scoped commit; this planning run itself must not commit, switch branches, or mutate Beads."
+      - "Report changed files, validation evidence, residual risks, and readiness for the coordinator's merge and fresh-base validation."
+
+open_questions:
+  - question: "No blocking design questions remain for task decomposition."
+    context: "The current Turn, Client, launch ownership, protocol sentinels, and repository constitution provide the required boundaries; the remaining choices are implementation details already resolved above."
+    proposed_resolution: "Proceed to /autospec.tasks using the exported constant names, three minimal sentinels, turn-only disconnect marker, and private launchedInstance exit-signal fanout described in this plan."
+
+_meta:
+  version: "1.0.0"
+  generator: "autospec"
+  generator_version: "autospec dev"
+  created: "2026-08-10T19:59:49Z"
+  artifact_type: "plan"

@@ -4,7 +4,7 @@ The Go SDK is the Go client for the jcode harness API. It speaks protocol v1 ove
 
 > **Unofficial community fork:** This is an independent, vibe-coded fork maintained by Ariel Frischer. It is not an official Jcode release, is not endorsed or supported by the upstream Jcode maintainers, and may be incomplete or incompatible with future Jcode versions. Use it experimentally and review the code before relying on it.
 
-> **API status:** The Go package provides a transport-level client, typed session helpers (`CreateSession`, `AttachSession`, `Session.Send`), typed event streams, and private-instance helpers (`Launch`, `LaunchInstance`, and `LaunchOptions`). Raw `Request` and `Subscribe` remain available for forward-compatible protocol additions.
+> **API status:** The Go package provides a transport-level client, typed session helpers (`CreateSession`, `AttachSession`, `Session.Send`, and `Session.StartTurn`), typed event streams, and private-instance helpers (`Launch`, `LaunchInstance`, and `LaunchOptions`). Raw `Request` and `Subscribe` remain available for forward-compatible protocol additions.
 
 ## Install
 
@@ -120,6 +120,54 @@ for {
 
 `AttachSession` creates the same lightweight typed view for an existing ID. `Session.Send` subscribes before notifying the server and waits for the asynchronous `message_accepted` event. `SendOptions.NoReply` selects fire-and-forget notification semantics. `Session.Send` does not retry because a timeout can leave a mutation with an unknown server-side outcome.
 
+Use `StartTurn` when the caller must own acceptance, ordered events,
+cancellation, and completion as one lifecycle:
+
+```go
+turn, err := session.StartTurn(lifecycleCtx, prompt, jcode.SendOptions{})
+if err != nil { return err }
+if err := turn.Accepted(waitCtx); err != nil { return err }
+
+var cancelErr error
+for {
+    event, err := turn.Next(waitCtx)
+    if err != nil {
+        if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+            cancelCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+            cancelErr = turn.Cancel(cancelCtx)
+            cancel()
+        }
+        break
+    }
+    if text, ok := event.(*jcode.TextDelta); ok {
+        io.WriteString(out, text.Text)
+    }
+}
+
+terminalWaitCtx, cancelTerminalWait := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancelTerminalWait()
+result, err := turn.Wait(terminalWaitCtx)
+if err != nil { return errors.Join(cancelErr, err) } // only this fresh Wait was interrupted
+switch result.Kind {
+case jcode.TurnResultCompleted:
+    return nil
+case jcode.TurnResultCanceled:
+    return result.Err
+default:
+    return result.Err
+}
+```
+
+When the event wait is interrupted, the example explicitly requests server-side
+cancellation and then waits for the terminal outcome with a fresh bounded context.
+The lifecycle context passed to `StartTurn` owns the turn. Canceling it records
+`TurnResultLifecycleCanceled` or `TurnResultLifecycleDeadlineExceeded` and does
+not send protocol `cancel`. Contexts passed to `Accepted`, `Next`, `Cancel`, and
+`Wait` bound only those calls. `Turn.Cancel` sends at most one shared protocol
+request, and a successful acknowledgement remains non-terminal until the server
+emits its terminal event. The first terminal signal is stored immutably, so all
+later `Wait` calls return the same `TurnResult`.
+
 
 ```go
 create, err := protocol.NewRawRequest("create_session", map[string]any{
@@ -146,7 +194,7 @@ if err := json.Unmarshal(fields, &sessions); err != nil {
 The raw request path remains available when an application needs a request or event added by a newer server:
 
 
-`Request` waits for the correlated reply or `ctx.Done()`. Each request also has a 30-second SDK deadline by default, preventing a bridge or daemon that accepts a connection but never replies from hanging a caller indefinitely. Set `Options.RequestTimeout` to a positive duration to override that bound. Cancellation removes the pending request locally, but it does not necessarily cancel work already accepted by the server. To stop a model turn, send the protocol `cancel` request for the session.
+`Request` waits for the correlated reply or `ctx.Done()`. Each request also has a 30-second SDK deadline by default, preventing a bridge or daemon that accepts a connection but never replies from hanging a caller indefinitely. Set `Options.RequestTimeout` to a positive duration to override that bound. Cancellation removes the pending request locally, but it does not necessarily cancel work already accepted by the server. For an owned turn, use `Turn.Cancel`; raw protocol callers may still send `cancel` directly.
 
 [`examples/streaming`](examples/streaming) demonstrates a long-lived service. For a typed stream, use `session.Events(ctx)` and switch on `*TextDelta`, `*ToolStart`, `*TokenUsage`, `*PermissionRequest`, and `*TurnDone`. The lower-level `Subscription` API remains useful when a service wants raw event fields:
 
@@ -188,7 +236,10 @@ defer cancel()
 reply, err := client.Request(ctx, request)
 ```
 
-A canceled context only abandons the local wait. For a server-side turn cancellation, send `cancel` with the session ID and continue consuming events until `turn_done` or shutdown.
+A per-method canceled context only abandons that method's local wait. A
+`StartTurn` lifecycle context instead terminates the owned turn locally without
+sending protocol cancellation. For server-side cancellation, call
+`Turn.Cancel` and continue observing the turn until its terminal result.
 
 The SDK does not automatically reconnect or replay events. Use `Reconnect` when you configure a `transport.Factory`; it retries connection setup according to `ReconnectPolicy`, and with `Resume: true` it sends the remembered session ID after the new handshake. In-flight requests are never retried. Persist session IDs in your application and resubscribe after reconnect:
 
@@ -216,10 +267,31 @@ A fresh subscription only receives events from attach onward. Protocol v1 cannot
 Branch on sentinel errors where available, and preserve protocol error code/message fields for diagnostics:
 
 - `ErrClosed`: client or transport has closed.
+- `ErrDisconnected`: the client transport disconnected.
 - `ErrSubscriberOverflow`: one subscription exceeded its bounded queue.
+- `ErrTurnCanceled`: the server terminal event completed an explicit turn cancellation.
+- `ErrProtocolFailure`: an owned turn ended on invalid framing, protocol data, or typed event decoding.
+- `ErrBridgeExited`: the attached SDK-owned private bridge exited.
 - `context.Canceled` and `context.DeadlineExceeded`: local caller cancellation/deadline.
 - `protocol.ErrMalformedFrame`, `ErrInvalidFrame`, and `ErrFrameTooLarge`: invalid or unsafe wire data.
 - A `protocol.Error` event: the harness rejected a request. Its `Code` is stable; its `Message` is diagnostic.
+
+`TurnResult.Kind` is one of `TurnResultCompleted`, `TurnResultCanceled`,
+`TurnResultLifecycleCanceled`, `TurnResultLifecycleDeadlineExceeded`,
+`TurnResultProviderError`, `TurnResultProtocolError`,
+`TurnResultSubscriberOverflow`, `TurnResultBridgeExited`,
+`TurnResultTransportDisconnected`, or `TurnResultClientClosed`. Inspect
+`TurnResult.Err` with `errors.Is` and `errors.As`. Owned-turn errors preserve
+safe sentinels and provider codes, but omit provider messages, raw frames,
+transport diagnostics, prompts, response content, credentials, private paths,
+and session identifiers.
+
+Ordinary disconnect closes active turn-owned subscriptions so a `Turn` never
+appears as an unexplained empty stream. Raw subscriptions retain their existing
+explicit-reconnect behavior. Only positive evidence from an attached
+SDK-launched Linux `Instance` produces `TurnResultBridgeExited`; EOF on a
+`Connect` client is `TurnResultTransportDisconnected`. Neither path retries,
+replays, reconnects, or revives the ended turn automatically.
 
 Treat `timeout`, disconnect, and transport failures as unknown-outcome for mutations. Retry idempotent reads only, and refresh session state after reconnect. Keep a default branch for future protocol error codes and event kinds.
 

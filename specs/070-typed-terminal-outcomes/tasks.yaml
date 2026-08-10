@@ -1,0 +1,608 @@
+tasks:
+  branch: "agent/jcode-go-70h-4"
+  created: "2026-08-10"
+  spec_path: "specs/070-typed-terminal-outcomes/spec.yaml"
+  plan_path: "specs/070-typed-terminal-outcomes/plan.yaml"
+
+summary:
+  total_tasks: 37
+  total_phases: 7
+  parallel_opportunities: 6
+  estimated_complexity: "high"
+
+phases:
+  - number: 1
+    title: "Setup"
+    purpose: "Confirm the current worktree, repository contracts, baseline status, and execution boundaries before editing."
+    tasks:
+      - id: "T001"
+        title: "Confirm current worktree and planning-only boundaries from AGENTS.md"
+        status: "Completed"
+        type: "setup"
+        parallel: false
+        story_id: null
+        file_path: "AGENTS.md"
+        dependencies: []
+        acceptance_criteria:
+          - "Work remains on branch agent/jcode-go-70h-4 in the current worktree; do not create or switch branches, delegate implementation, mutate Beads, or commit during task generation."
+          - "Implementation scope is limited to the existing Go lifecycle files, existing tests, README.md, docs/architecture.md, and explicit validation artifacts named by later tasks."
+          - "Unrelated modifications and the planning artifact under specs/070-typed-terminal-outcomes remain preserved rather than cleaned or implicitly staged."
+
+      - id: "T002"
+        title: "Inspect existing Turn, Client, Session, launch, and test surfaces before editing turn.go"
+        status: "Completed"
+        type: "setup"
+        parallel: false
+        story_id: null
+        file_path: "turn.go"
+        dependencies: ["T001"]
+        acceptance_criteria:
+          - "Inspect turn.go, session.go, client.go, launch.go, client_validation_test.go, turn_test.go, client_test.go, launch_test.go, and ownership_test.go before writing tests or production code."
+          - "Identify the existing mutex-protected first-terminal path, subscription close behavior, process wait path, raw reconnect path, and canonical error sentinels so later tasks extend rather than duplicate them."
+          - "Do not add a new public wrapper type, lifecycle framework, protocol version, retry path, replay path, or Windows supervision path."
+
+      - id: "T003"
+        title: "Capture baseline repository status and test result from go.mod"
+        status: "Completed"
+        type: "setup"
+        parallel: false
+        story_id: null
+        file_path: "go.mod"
+        dependencies: ["T002"]
+        acceptance_criteria:
+          - "Run git status --short --branch and record pre-existing modified or untracked paths without changing them."
+          - "Run go test ./... -count=1 as a baseline and record any pre-existing failure without exposing credentials, prompts, responses, raw frames, or private identifiers."
+          - "Do not use git clean, reset, stash, broad staging, or any command that removes or rewrites unrelated work."
+
+  - number: 2
+    title: "Foundational - Red Contract Tests"
+    purpose: "Write the complete test-first contract and prove it fails for the missing typed-outcome behavior before any production change."
+    tasks:
+      - id: "T004"
+        title: "Add red stable terminal taxonomy and cause-inspection tests in turn_test.go"
+        status: "Completed"
+        type: "test"
+        parallel: false
+        story_id: "US-001"
+        file_path: "turn_test.go"
+        dependencies: ["T003"]
+        acceptance_criteria:
+          - "Add table-driven coverage for all ten exported TurnResultKind constants, preserving the established completed, canceled, lifecycle_canceled, lifecycle_deadline_exceeded, and provider_error strings exactly."
+          - "Cover protocol_error, subscriber_overflow, bridge_exited, transport_disconnected, and client_closed with distinct stable values."
+          - "Assert nil Err for successful completion and errors.Is/errors.As inspection for the planned cancellation, protocol, bridge, provider, overflow, disconnect, and close causes."
+          - "Run the focused test and confirm it is red because the additive public contract is not implemented, not because the test is malformed."
+
+      - id: "T005"
+        title: "Add red first-terminal immutability and conflict-matrix tests in turn_test.go"
+        status: "Completed"
+        type: "test"
+        parallel: false
+        story_id: "US-001"
+        file_path: "turn_test.go"
+        dependencies: ["T004"]
+        acceptance_criteria:
+          - "Drive completion against cancellation, provider, protocol, overflow, transport, bridge, lifecycle, and close signals using deterministic fixtures and the existing synchronization seams."
+          - "Assert that one synchronized first terminal result remains authoritative, repeated Wait calls return equivalent stored values, and late signals cannot replace or create a second terminal transition."
+          - "Assert pre-acceptance terminal failures wake Accepted consistently and never report successful acceptance after a failure."
+          - "Run the focused conflict tests and confirm the expected red state before production changes."
+
+      - id: "T006"
+        title: "Add red lifecycle, explicit-cancel, and per-method-context tests in turn_test.go"
+        status: "Completed"
+        type: "test"
+        parallel: false
+        story_id: "US-002"
+        file_path: "turn_test.go"
+        dependencies: ["T005"]
+        acceptance_criteria:
+          - "Cover explicit server cancellation only after the server terminal cancellation event, with a successful cancel acknowledgement remaining non-terminal."
+          - "Cover lifecycle context cancellation and lifecycle deadline expiry as distinct outcomes retaining context.Cause or context.Err inspection, with zero protocol cancel writes."
+          - "Cancel contexts passed only to Accepted, Next, Cancel, and Wait and assert that only the individual call is interrupted while the Turn remains live."
+          - "Cover concurrent Cancel callers sharing one SDK-created protocol request and result, including timeout or disconnect without retry."
+          - "Run the focused tests and confirm the intended red failures before implementation."
+
+      - id: "T007"
+        title: "Add red malformed, invalid, and oversized frame classification tests in client_validation_test.go"
+        status: "Completed"
+        type: "test"
+        parallel: true
+        story_id: "US-001"
+        file_path: "client_validation_test.go"
+        dependencies: ["T003"]
+        acceptance_criteria:
+          - "Inject malformed, invalid, and oversized protocol frames into an owned Turn fixture and assert a distinct protocol_error outcome with safe protocol sentinel inspection."
+          - "Assert protocol failures are not classified as provider EventError failures and unsafe frame or transport text is absent from owned-turn causes."
+          - "Preserve raw protocol error inspection behavior for callers using the existing raw APIs."
+          - "Run the focused validation tests and confirm the expected red state before production edits."
+
+      - id: "T008"
+        title: "Add red subscription isolation, disconnect, overflow, and close tests in client_test.go"
+        status: "Completed"
+        type: "test"
+        parallel: true
+        story_id: "US-003"
+        file_path: "client_test.go"
+        dependencies: ["T003"]
+        acceptance_criteria:
+          - "Assert ordinary EOF or transport disconnect terminates only turn-owned subscriptions with the transport-disconnect cause while raw subscriptions remain available for caller-controlled explicit reconnect."
+          - "Fill one bounded subscriber queue and assert subscriber overflow affects only that subscription or Turn, while the reader, request correlation, and unrelated subscribers continue."
+          - "Race repeated and concurrent Client.Close calls with active Turns and event consumers and assert ErrClosed inspection, waiter wake-up, idempotent cleanup, and no double close or panic."
+          - "Run the focused client tests and confirm the expected red state before production edits."
+
+      - id: "T009"
+        title: "Add red private bridge wait-fanout and ownership-evidence tests in launch_test.go"
+        status: "Completed"
+        type: "test"
+        parallel: true
+        story_id: "US-003"
+        file_path: "launch_test.go"
+        dependencies: ["T003"]
+        acceptance_criteria:
+          - "Use a controlled launched-instance fixture to assert that process wait results fan out to a private buffered bridge-exit signal without consuming the shutdown wait path."
+          - "Assert bridge_exited is eligible only for an attached SDK-owned instance and that Connect-created clients classify EOF as transport disconnect."
+          - "Cover bridge exit versus EOF and bridge exit versus Client.Close races without relying on provider text, socket paths, arbitrary PIDs, or exported Instance changes."
+          - "Run the focused launch tests and confirm the expected red state before production edits."
+
+      - id: "T010"
+        title: "Add red raw API and ownership compatibility tests in ownership_test.go"
+        status: "Completed"
+        type: "test"
+        parallel: true
+        story_id: "US-004"
+        file_path: "ownership_test.go"
+        dependencies: ["T003"]
+        acceptance_criteria:
+          - "Exercise existing Session.Send, Session.Events, Request, Notify, Subscribe, explicit reconnect, Client.Close, Connect, Launch, DetachInstance, and Instance shutdown paths without changing their signatures."
+          - "Assert Session.Send remains acceptance-only or notification-only as documented and never gains implicit completion wait, cancellation, retry, replay, or reconnect automation."
+          - "Assert ownership transfer and idempotent close behavior remain unchanged while typed Turn outcomes are enabled."
+          - "Run the focused compatibility tests and confirm the expected red state before production edits."
+
+      - id: "T011"
+        title: "Add red owned-turn redaction assertions in turn_test.go"
+        status: "Completed"
+        type: "test"
+        parallel: false
+        story_id: "US-004"
+        file_path: "turn_test.go"
+        dependencies: ["T006"]
+        acceptance_criteria:
+          - "Use synthetic fixture values representing unsafe provider messages, transport text, prompts, credentials, response content, raw frames, and private session identifiers."
+          - "Assert owned-turn errors and lifecycle observations retain safe provider codes, sentinels, and bounded phase metadata while excluding every protected fixture value."
+          - "Assert raw API behavior remains compatible and is not broadened by owned-turn redaction."
+          - "Run the focused redaction tests and confirm the expected red state before production edits."
+
+      - id: "T012"
+        title: "Run the complete red contract suite from turn_test.go before production changes"
+        status: "Completed"
+        type: "test"
+        parallel: false
+        story_id: null
+        file_path: "turn_test.go"
+        dependencies: ["T004", "T005", "T006", "T007", "T008", "T009", "T010", "T011"]
+        acceptance_criteria:
+          - "Run the focused red lifecycle suite covering Turn, Client, validation, launch, and ownership tests with -count=1."
+          - "Confirm failures correspond to the missing typed terminal contract and lifecycle routing rather than syntax, fixture, or unrelated baseline defects."
+          - "Do not modify production files, weaken assertions, skip required failure classes, or begin implementation until this red-test checkpoint is recorded."
+
+  - number: 3
+    title: "User Story 1 - Receive one stable terminal outcome per turn"
+    purpose: "Implement the smallest typed result surface and make one locked first-terminal commit authoritative for every Turn producer."
+    story_reference: "US-001"
+    independent_test: "Run the focused turn taxonomy, cause, immutability, protocol, conflict, repeated Wait, and redaction tests after the Turn implementation."
+    tasks:
+      - id: "T013"
+        title: "Export TurnResultKind constants and minimal sentinels in turn.go"
+        status: "Completed"
+        type: "implementation"
+        parallel: false
+        story_id: "US-001"
+        file_path: "turn.go"
+        dependencies: ["T012"]
+        acceptance_criteria:
+          - "Export TurnResultCompleted, TurnResultCanceled, TurnResultLifecycleCanceled, TurnResultLifecycleDeadlineExceeded, TurnResultProviderError, TurnResultProtocolError, TurnResultSubscriberOverflow, TurnResultBridgeExited, TurnResultTransportDisconnected, and TurnResultClientClosed with the exact established or planned stable string values."
+          - "Add only ErrTurnCanceled, ErrProtocolFailure, and ErrBridgeExited as new exported sentinels and preserve existing ErrSubscriberOverflow, ErrDisconnected, ErrClosed, and protocol sentinels."
+          - "Keep TurnResult with its existing public Kind and Err inspection surface; do not add a public wrapper type or change existing method signatures."
+
+      - id: "T014"
+        title: "Centralize Turn terminal commit, cause classification, and redaction in turn.go"
+        status: "Completed"
+        type: "implementation"
+        parallel: false
+        story_id: "US-001"
+        file_path: "turn.go"
+        dependencies: ["T013"]
+        acceptance_criteria:
+          - "Route completion, provider, protocol, overflow, subscription, lifecycle, client, transport, bridge, cancellation, and write-failure producers through the existing mutex-protected first-terminal helper."
+          - "Store exactly one immutable TurnResult and make every later Wait return the stored result without a second terminal notification or replacement."
+          - "Preserve EventError code and errors.As inspection while omitting unsafe provider and transport message text from owned-turn causes."
+          - "Preserve event ordering, acceptance semantics, single-consumer Next behavior, and terminal wake-up behavior, including pre-acceptance failures."
+          - "Use deterministic synchronization and existing ownership mechanisms rather than adding a second atomic or lifecycle framework."
+
+      - id: "T015"
+        title: "Run focused normal Turn outcome tests in turn_test.go"
+        status: "Completed"
+        type: "test"
+        parallel: false
+        story_id: "US-001"
+        file_path: "turn_test.go"
+        dependencies: ["T014"]
+        acceptance_criteria:
+          - "Run focused normal tests for all stable kinds, safe causes, protocol/provider distinction, first-terminal immutability, repeated Wait, redaction, and pre-acceptance failures with -count=1."
+          - "All focused Turn tests pass without sleeps used as synchronization and without exposing protected fixture values."
+          - "If a failure remains, fix only the minimal Turn implementation or test fixture needed before proceeding to race validation."
+
+      - id: "T016"
+        title: "Run focused race Turn outcome tests in turn_test.go"
+        status: "Completed"
+        type: "test"
+        parallel: false
+        story_id: "US-001"
+        file_path: "turn_test.go"
+        dependencies: ["T015"]
+        acceptance_criteria:
+          - "Run the focused Turn conflict, repeated Wait, dispatcher, and terminal notification tests with go test -race and -count=1."
+          - "The race run completes without data races, deadlocks, goroutine leaks, panics, blocked waiters, duplicate channel closes, or replacement terminal results."
+
+  - number: 4
+    title: "User Story 2 - Distinguish server cancellation from local lifecycle stop"
+    purpose: "Preserve the distinction between server cancellation, lifecycle cancellation, lifecycle deadlines, and per-call wait interruption."
+    story_reference: "US-002"
+    independent_test: "Run the focused cancellation and lifecycle tests with controlled request-write counters and canceled wait contexts."
+    tasks:
+      - id: "T017"
+        title: "Implement distinct lifecycle cancellation and deadline outcomes in turn.go"
+        status: "Completed"
+        type: "implementation"
+        parallel: false
+        story_id: "US-002"
+        file_path: "turn.go"
+        dependencies: ["T016"]
+        acceptance_criteria:
+          - "Classify a canceled lifecycle context as TurnResultLifecycleCanceled and an expired lifecycle deadline as TurnResultLifecycleDeadlineExceeded."
+          - "Retain context.Cause when available with context.Err fallback so callers can inspect the applicable cause using errors.Is or errors.As."
+          - "Do not construct or send a protocol cancellation request for either lifecycle signal."
+          - "Keep contexts passed to Accepted, Next, Cancel, and Wait scoped to those method calls rather than turning them into Turn lifecycle signals."
+
+      - id: "T018"
+        title: "Implement one-shot explicit server cancellation semantics in turn.go"
+        status: "Completed"
+        type: "implementation"
+        parallel: false
+        story_id: "US-002"
+        file_path: "turn.go"
+        dependencies: ["T017"]
+        acceptance_criteria:
+          - "Construct and send at most one SDK-owned protocol cancellation request for concurrent Turn.Cancel callers, sharing the first request result."
+          - "Keep a successful cancellation acknowledgement non-terminal until the server reports the turn cancellation terminal event."
+          - "Classify the server terminal cancellation event as TurnResultCanceled with ErrTurnCanceled and do not retry after caller timeout or disconnect."
+          - "Ensure a canceled Cancel or Wait context interrupts only that caller while a later call can observe the live Turn or immutable result."
+
+      - id: "T019"
+        title: "Run focused normal cancellation and lifecycle tests in turn_test.go"
+        status: "Completed"
+        type: "test"
+        parallel: false
+        story_id: "US-002"
+        file_path: "turn_test.go"
+        dependencies: ["T018"]
+        acceptance_criteria:
+          - "Run focused normal tests for explicit cancellation, lifecycle cancellation, lifecycle deadline, cancel serialization, cancellation acknowledgement non-terminality, and per-method context scope with -count=1."
+          - "Assert zero protocol cancel writes for lifecycle cancellation and deadline cases and exactly one write for concurrent explicit cancellation."
+          - "All focused cancellation tests pass without automatic retry, replay, or reconnect."
+
+      - id: "T020"
+        title: "Run focused race cancellation and lifecycle tests in turn_test.go"
+        status: "Completed"
+        type: "test"
+        parallel: false
+        story_id: "US-002"
+        file_path: "turn_test.go"
+        dependencies: ["T019"]
+        acceptance_criteria:
+          - "Run the focused cancellation, lifecycle watcher, waiter interruption, and conflicting terminal signal tests with go test -race and -count=1."
+          - "The race run proves one cancellation write, no lifecycle protocol cancel, shared results for concurrent callers, and no data race or blocked waiter."
+
+  - number: 5
+    title: "User Story 3 - Make connection and subscription failures explicit"
+    purpose: "Terminate owned Turns on disconnect, protocol failure, overflow, close, or positive bridge exit while preserving raw reconnect and ownership behavior."
+    story_reference: "US-003"
+    independent_test: "Inject controlled EOF, protocol failure, overflow, Client.Close, and attached bridge-exit signals and observe all affected consumers."
+    tasks:
+      - id: "T021"
+        title: "Mark StartTurn's internal subscription as turn-only in session.go"
+        status: "Completed"
+        type: "implementation"
+        parallel: false
+        story_id: "US-003"
+        file_path: "session.go"
+        dependencies: ["T020"]
+        acceptance_criteria:
+          - "Mark only the private subscription created by StartTurn as turn-only through internal metadata or an equivalent private mechanism."
+          - "Keep Session.Send, Session.Events, raw Subscribe, and all public signatures and ownership behavior unchanged."
+          - "Do not expose the marker through the raw API or add automatic reconnect, replay, or Turn revival."
+
+      - id: "T022"
+        title: "Route client disconnect, protocol, overflow, and close failures in client.go"
+        status: "Completed"
+        type: "implementation"
+        parallel: false
+        story_id: "US-003"
+        file_path: "client.go"
+        dependencies: ["T021"]
+        acceptance_criteria:
+          - "On ordinary disconnect, fail only turn-only subscriptions with ErrDisconnected while keeping raw subscriptions open for explicit caller-controlled reconnect."
+          - "Route subscriber overflow only to the affected subscription or Turn without blocking the client reader, request correlation, other subscribers, or unrelated event consumers."
+          - "Preserve broad fatal protocol and Client.Close cleanup semantics while publishing sanitized owned-turn causes and waking every affected waiter exactly once."
+          - "Retain existing idempotent subscription and client close synchronization with no double close, panic, or blocked reader."
+
+      - id: "T023"
+        title: "Fan out launched bridge wait results through private evidence in launch.go"
+        status: "Completed"
+        type: "implementation"
+        parallel: false
+        story_id: "US-003"
+        file_path: "launch.go"
+        dependencies: ["T022"]
+        acceptance_criteria:
+          - "Fan out the existing cmd.Wait result to a private buffered bridge-exit signal when the launched process starts while preserving the existing shutdown wait path."
+          - "Expose the signal only through a private launchedInstance method or type assertion; do not change the exported Instance interface or process_windows.go."
+          - "Keep Linux process-group supervision, bounded reap, owned paths, and cleanup responsibilities unchanged."
+          - "Ensure a stopped or closed client cannot block the bridge signal producer."
+
+      - id: "T024"
+        title: "Forward attached bridge-exit evidence and resolve bridge races in client.go"
+        status: "Completed"
+        type: "implementation"
+        parallel: false
+        story_id: "US-003"
+        file_path: "client.go"
+        dependencies: ["T023"]
+        acceptance_criteria:
+          - "Watch the private bridge-exit signal only for a Client attached to a launched SDK-owned instance and forward it to active turn-only subscriptions."
+          - "Publish only ErrBridgeExited for a positive owned bridge signal, and let the shared Turn first-terminal commit decide bridge_exited versus transport_disconnected or client_closed."
+          - "Do not infer bridge ownership from generic EOF, provider or transport text, socket paths, or untrusted PIDs, and do not terminate raw subscriptions from bridge evidence."
+          - "Stop or harmlessly retire the private watcher after Client.Close without leaking goroutines or blocking shutdown."
+
+      - id: "T025"
+        title: "Run focused normal client, subscription, validation, and bridge tests in client_test.go"
+        status: "Completed"
+        type: "test"
+        parallel: false
+        story_id: "US-003"
+        file_path: "client_test.go"
+        dependencies: ["T024"]
+        acceptance_criteria:
+          - "Run focused normal tests for raw versus turn-only disconnect, explicit reconnect compatibility, protocol failure, bounded overflow, close wake-up, subscriber isolation, launch wait fanout, and owned bridge evidence with -count=1."
+          - "Assert no automatic retry, replay, reconnect, or Turn revival and no unsafe error text in owned-turn results."
+          - "All affected waiters and event consumers return and unrelated request or subscriber paths continue."
+
+      - id: "T026"
+        title: "Run focused race client, subscription, close, and bridge tests in client_test.go"
+        status: "Completed"
+        type: "test"
+        parallel: false
+        story_id: "US-003"
+        file_path: "client_test.go"
+        dependencies: ["T025"]
+        acceptance_criteria:
+          - "Run focused client and launch lifecycle tests with go test -race and -count=1."
+          - "The race run covers disconnect versus bridge exit, bridge exit versus close, overflow versus terminal delivery, repeated close, waiter wake-up, private watcher shutdown, and raw subscription isolation without races, deadlocks, leaks, or double closes."
+
+  - number: 6
+    title: "User Story 4 - Preserve compatible APIs and safe error inspection"
+    purpose: "Verify unchanged raw protocol and ownership contracts and synchronize public documentation with the additive typed outcome behavior."
+    story_reference: "US-004"
+    independent_test: "Run the existing raw API, reconnect, close, Launch, DetachInstance, and ownership compatibility tests with the typed outcome suite."
+    tasks:
+      - id: "T027"
+        title: "Run focused raw API and ownership compatibility tests in ownership_test.go"
+        status: "Completed"
+        type: "test"
+        parallel: false
+        story_id: "US-004"
+        file_path: "ownership_test.go"
+        dependencies: ["T026"]
+        acceptance_criteria:
+          - "Run focused tests for Session.Send, Session.Events, Request, Notify, Subscribe, explicit reconnect, Client.Close, Connect, Launch, DetachInstance, and Instance shutdown with -count=1."
+          - "Confirm no public signature changes, implicit completion wait, implicit server cancellation, replay, retry, reconnect automation, or ownership regression."
+          - "Confirm errors.Is/errors.As can inspect stable typed terminal causes without requiring message parsing and raw API behavior remains compatible."
+
+      - id: "T028"
+        title: "Sync typed terminal outcome guidance in README.md"
+        status: "Completed"
+        type: "documentation"
+        parallel: true
+        story_id: "US-004"
+        file_path: "README.md"
+        dependencies: ["T027"]
+        acceptance_criteria:
+          - "Document a minimal StartTurn, Accepted, Next, Cancel, and Wait example using the stable TurnResultKind constants."
+          - "Document TurnResult cause inspection with errors.Is/errors.As, lifecycle context versus per-call wait contexts, explicit server cancellation semantics, and immutable first-terminal behavior."
+          - "Document raw reconnect compatibility, turn-only disconnect behavior, positive Linux attached bridge ownership evidence, redaction expectations, and the absence of retries or replay."
+
+      - id: "T029"
+        title: "Sync finalized lifecycle ownership contract in docs/architecture.md"
+        status: "Completed"
+        type: "documentation"
+        parallel: true
+        story_id: "US-004"
+        file_path: "docs/architecture.md"
+        dependencies: ["T027"]
+        acceptance_criteria:
+          - "Replace the .4 placeholder wording with the exact exported TurnResultKind names and the ErrTurnCanceled, ErrProtocolFailure, and ErrBridgeExited sentinel policy."
+          - "Document the single locked first-terminal commit, turn-only ordinary disconnect rule, raw explicit reconnect boundary, private attached bridge-exit signal, and Linux-only scope."
+          - "Preserve the existing Client, Turn, Instance, Connect, Launch, and DetachInstance ownership contract and redaction rules."
+
+  - number: 7
+    title: "Polish & Cross-Cutting Concerns"
+    purpose: "Format, validate, inspect, explicitly land, and verify the implementation without broad staging or workflow side effects."
+    tasks:
+      - id: "T030"
+        title: "Run gofmt on all changed Go files"
+        status: "Completed"
+        type: "refactor"
+        parallel: false
+        story_id: null
+        file_path: "turn.go"
+        dependencies: ["T028", "T029"]
+        acceptance_criteria:
+          - "Run gofmt -w on turn.go, session.go, client.go, launch.go, turn_test.go, turn_outcome_test.go, client_test.go, client_validation_test.go, launch_test.go, and ownership_test.go."
+          - "Run gofmt -d on the same explicit file list and confirm it produces no diff."
+          - "Do not format, rewrite, or stage unrelated files."
+
+      - id: "T031"
+        title: "Run the complete normal Go test suite from go.mod"
+        status: "Completed"
+        type: "test"
+        parallel: false
+        story_id: null
+        file_path: "go.mod"
+        dependencies: ["T030"]
+        acceptance_criteria:
+          - "Run go test ./... -count=1 from the repository root."
+          - "All packages pass, including protocol compatibility, transport, process ownership, client lifecycle, Turn, raw API, and documentation-adjacent compile coverage."
+          - "Record only redacted validation evidence and distinguish any pre-existing baseline failure from a regression."
+
+      - id: "T032"
+        title: "Run the complete race-enabled Go test suite from go.mod"
+        status: "Completed"
+        type: "test"
+        parallel: false
+        story_id: null
+        file_path: "go.mod"
+        dependencies: ["T031"]
+        acceptance_criteria:
+          - "Run go test -race ./... -count=1 from the repository root."
+          - "The full race suite passes without data races, deadlocks, goroutine leaks, blocked consumers, panics, double closes, or flaky terminal result replacement."
+
+      - id: "T033"
+        title: "Run go vet across all packages from go.mod"
+        status: "Completed"
+        type: "test"
+        parallel: false
+        story_id: null
+        file_path: "go.mod"
+        dependencies: ["T032"]
+        acceptance_criteria:
+          - "Run go vet ./... from the repository root and require a zero exit status."
+          - "Do not suppress diagnostics or alter unrelated code solely to silence vet."
+
+      - id: "T034"
+        title: "Run bounded Windows compile only for the additive public-file change from go.mod"
+        status: "Completed"
+        type: "test"
+        parallel: false
+        story_id: null
+        file_path: "go.mod"
+        dependencies: ["T033"]
+        acceptance_criteria:
+          - "Because turn.go and related public Go files change, run timeout 120s env GOOS=windows GOARCH=amd64 go build ./... as a bounded compile check."
+          - "Do not add or expand Windows supervision, edit process_windows.go, run a Windows binary, or infer Windows lifecycle behavior from this compile."
+          - "If a future implementation changes no public Go file, explicitly skip this task and record the reason rather than running an unbounded cross-platform test."
+
+      - id: "T035"
+        title: "Inspect the tasks artifact and implementation status before landing"
+        status: "Completed"
+        type: "test"
+        parallel: false
+        story_id: null
+        file_path: "specs/070-typed-terminal-outcomes/tasks.yaml"
+        dependencies: ["T034"]
+        acceptance_criteria:
+          - "Run autospec artifact specs/070-typed-terminal-outcomes/tasks.yaml and require format validation to pass."
+          - "Run git status --short --branch, git diff --stat, and git diff --check; inspect every changed path against the planned scope."
+          - "Confirm no credentials, prompts, response content, raw frames, private session identifiers, or unsafe provider or transport text appear in validation output."
+
+      - id: "T036"
+        title: "Stage explicit implementation files and create one scoped commit"
+        status: "Completed"
+        type: "refactor"
+        parallel: false
+        story_id: null
+        file_path: "turn.go"
+        dependencies: ["T035"]
+        acceptance_criteria:
+          - "For the later implementation run only, stage explicit changed files: turn.go, session.go, client.go, launch.go, turn_test.go, turn_outcome_test.go, client_test.go, client_validation_test.go, launch_test.go, ownership_test.go, README.md, and docs/architecture.md."
+          - "Do not use git add ., git add -A, stash, reset, rebase, amend, squash, force-push, or stage the planning artifact implicitly."
+          - "Create one scoped commit with a message such as feat: add typed terminal outcomes only after all prior validation passes."
+          - "Do not execute this task during the current planning-artifact generation run."
+
+      - id: "T037"
+        title: "Verify the scoped implementation branch is clean after commit"
+        status: "Completed"
+        type: "test"
+        parallel: false
+        story_id: null
+        file_path: "."
+        dependencies: ["T036"]
+        acceptance_criteria:
+          - "Run git status --short --branch, git diff --check, and git diff --cached --check after the scoped commit."
+          - "Verify no staged or unstaged implementation changes remain and the committed file list matches the explicit scope."
+          - "Do not delete or stage unrelated pre-existing changes or the planning-only specs/070-typed-terminal-outcomes artifact; report those paths separately if they remain visible."
+
+dependencies:
+  user_story_order:
+    - story_id: "US-001"
+      depends_on: []
+      blocks: ["US-002", "US-003"]
+    - story_id: "US-002"
+      depends_on: ["US-001"]
+      blocks: ["US-003", "US-004"]
+    - story_id: "US-003"
+      depends_on: ["US-001", "US-002"]
+      blocks: ["US-004"]
+    - story_id: "US-004"
+      depends_on: ["US-002", "US-003"]
+      blocks: []
+
+  phase_order:
+    - phase: 1
+      blocks: [2]
+    - phase: 2
+      blocks: [3]
+    - phase: 3
+      blocks: [4]
+    - phase: 4
+      blocks: [5]
+    - phase: 5
+      blocks: [6]
+    - phase: 6
+      blocks: [7]
+    - phase: 7
+      blocks: []
+
+parallel_execution:
+  - phase: 2
+    parallel_groups:
+      - tasks: ["T007", "T008", "T009", "T010"]
+        rationale: "Independent red tests edit distinct existing test files and all wait for the setup baseline; run directly in the current worktree, not through delegated implementation agents."
+  - phase: 6
+    parallel_groups:
+      - tasks: ["T028", "T029"]
+        rationale: "README.md and docs/architecture.md are separate documentation files and both depend only on compatibility verification."
+
+implementation_strategy:
+  mvp_scope:
+    phases: [1, 2, 3, 4, 5]
+    description: "Setup, complete red contract coverage, typed immutable Turn outcomes, distinct cancellation semantics, and explicit client/subscription/bridge failure outcomes for all P0 stories."
+    validation: "Run the focused normal and race Turn, cancellation, client, validation, launch, and ownership suites; require redaction, liveness, first-terminal, raw reconnect, and ownership assertions to pass."
+  incremental_delivery:
+    - milestone: "Red Contract Ready"
+      phases: [1, 2]
+      deliverable: "A complete executable failure matrix exists and is proven red before production changes."
+    - milestone: "Typed Turn Core Ready"
+      phases: [1, 2, 3, 4]
+      deliverable: "Owned Turns expose stable immutable outcomes, safe causes, server cancellation, lifecycle cancellation, lifecycle deadlines, and per-call wait context behavior."
+    - milestone: "P0 Lifecycle MVP Complete"
+      phases: [1, 2, 3, 4, 5]
+      deliverable: "Disconnect, protocol failure, overflow, client close, and positively evidenced bridge exit wake affected consumers without replay or raw reconnect regressions."
+    - milestone: "Compatibility and Handoff Complete"
+      phases: [1, 2, 3, 4, 5, 6, 7]
+      deliverable: "Documentation, focused and full normal/race validation, vet, conditional Windows compile, artifact/status inspection, explicit scoped commit, and clean branch verification are complete."
+
+_meta:
+  version: "1.0.0"
+  generator: "autospec"
+  generator_version: "autospec dev"
+  created: "2026-08-10T20:05:55Z"
+  artifact_type: "tasks"

@@ -219,7 +219,7 @@ func TestTurnEventBufferOverflowTerminatesOnlyTurn(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	result, err := turn.Wait(ctx)
-	if err != nil || !errors.Is(result.Err, ErrSubscriberOverflow) {
+	if err != nil || result.Kind != TurnResultSubscriberOverflow || !errors.Is(result.Err, ErrSubscriberOverflow) {
 		t.Fatalf("Wait result=%+v err=%v, want subscriber overflow", result, err)
 	}
 	if client.State() != StateConnected {
@@ -337,7 +337,7 @@ func TestTurnCancelIsSentOnceAndShared(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Wait: %v", err)
 	}
-	if string(result.Kind) != "canceled" {
+	if result.Kind != TurnResultCanceled || !errors.Is(result.Err, ErrTurnCanceled) {
 		t.Fatalf("result=%+v, want canceled", result)
 	}
 	if err := turn.Cancel(ctx); err != nil {
@@ -388,7 +388,7 @@ func TestTurnCancelReplyImmediatelyFollowedByTerminalIsCanceled(t *testing.T) {
 		t.Fatalf("Cancel: %v", err)
 	}
 	result, err := turn.Wait(ctx)
-	if err != nil || string(result.Kind) != "canceled" {
+	if err != nil || result.Kind != TurnResultCanceled || !errors.Is(result.Err, ErrTurnCanceled) {
 		t.Fatalf("Wait result=%+v err=%v, want canceled", result, err)
 	}
 	if err := <-serverDone; err != nil {
@@ -452,7 +452,7 @@ func TestTurnCancelContextOnlyInterruptsCallerWait(t *testing.T) {
 	}
 	close(allowTerminal)
 	result, err := turn.Wait(ctx)
-	if err != nil || string(result.Kind) != "canceled" {
+	if err != nil || result.Kind != TurnResultCanceled || !errors.Is(result.Err, ErrTurnCanceled) {
 		t.Fatalf("Wait result=%+v err=%v", result, err)
 	}
 	if err := <-serverDone; err != nil {

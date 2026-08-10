@@ -143,34 +143,96 @@ func (s *Subscription) Next(ctx context.Context) (Event, error) {
 func (s *Subscription) Close() { s.once.Do(func() { s.client.unsubscribe(s.id) }) }
 
 type Client struct {
-	transportMu  sync.RWMutex
-	transport    transport.Transport
-	encoder      *protocol.Encoder
-	decoder      *protocol.Decoder
-	options      Options
-	reconnectMu  sync.Mutex
-	stateMu      sync.RWMutex
-	state        State
-	capMu        sync.RWMutex
-	capabilities map[string]struct{}
-	sessionID    string
-	writeMu      sync.Mutex
-	pendingMu    sync.Mutex
-	pending      map[uint64]pendingRequest
-	subsMu       sync.Mutex
-	subs         map[uint64]*subscriber
-	nextID       atomic.Uint64
-	nextSub      atomic.Uint64
-	closed       chan struct{}
-	closeOnce    sync.Once
-	closeErr     error
-	instance     Instance
+	transportMu   sync.RWMutex
+	transport     transport.Transport
+	encoder       *protocol.Encoder
+	decoder       *protocol.Decoder
+	options       Options
+	reconnectMu   sync.Mutex
+	stateMu       sync.RWMutex
+	state         State
+	capMu         sync.RWMutex
+	capabilities  map[string]struct{}
+	sessionID     string
+	writeMu       sync.Mutex
+	pendingMu     sync.Mutex
+	pending       map[uint64]pendingRequest
+	subsMu        sync.Mutex
+	subs          map[uint64]*subscriber
+	nextID        atomic.Uint64
+	nextSub       atomic.Uint64
+	closed        chan struct{}
+	closeOnce     sync.Once
+	closeErr      error
+	instance      Instance
+	bridgeMonitor *bridgeExitMonitor
+}
+
+type bridgeExitMonitor struct {
+	canceled   chan struct{}
+	done       chan struct{}
+	cancelOnce sync.Once
+}
+
+func newBridgeExitMonitor() *bridgeExitMonitor {
+	return &bridgeExitMonitor{
+		canceled: make(chan struct{}),
+		done:     make(chan struct{}),
+	}
+}
+
+func (m *bridgeExitMonitor) cancel() {
+	m.cancelOnce.Do(func() { close(m.canceled) })
 }
 
 func (c *Client) setInstance(instance Instance) {
+	var exited <-chan struct{}
+	if source, ok := instance.(interface{ bridgeExited() <-chan struct{} }); ok {
+		exited = source.bridgeExited()
+	}
+	var monitor *bridgeExitMonitor
+	if exited != nil {
+		monitor = newBridgeExitMonitor()
+	}
+
 	c.stateMu.Lock()
+	c.cancelBridgeMonitorLocked()
 	c.instance = instance
+	c.bridgeMonitor = monitor
 	c.stateMu.Unlock()
+	if monitor != nil {
+		go c.watchBridgeExit(monitor, exited)
+	}
+}
+
+func (c *Client) cancelBridgeMonitorLocked() {
+	if c.bridgeMonitor != nil {
+		c.bridgeMonitor.cancel()
+		c.bridgeMonitor = nil
+	}
+}
+
+func (c *Client) watchBridgeExit(monitor *bridgeExitMonitor, exited <-chan struct{}) {
+	defer close(monitor.done)
+	select {
+	case <-exited:
+	case <-monitor.canceled:
+		return
+	case <-c.closed:
+		return
+	}
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	if c.bridgeMonitor != monitor || c.instance == nil || c.state == StateClosing || c.state == StateClosed {
+		return
+	}
+	select {
+	case <-monitor.canceled:
+		return
+	default:
+	}
+	c.failTurnSubscribers(ErrBridgeExited)
+	c.bridgeMonitor = nil
 }
 
 // DetachInstance transfers ownership of a private runtime from the client to
@@ -187,6 +249,7 @@ func (c *Client) DetachInstance() (Instance, bool) {
 		return nil, false
 	}
 	instance := c.instance
+	c.cancelBridgeMonitorLocked()
 	c.instance = nil
 	return instance, true
 }
@@ -197,6 +260,7 @@ type subscriber struct {
 	done   chan struct{}
 	once   sync.Once
 	err    error
+	turn   bool
 }
 
 type pendingRequest struct {
@@ -450,7 +514,15 @@ func (c *Client) Subscribe(sessionID string) *Subscription {
 }
 
 func (c *Client) subscribe(sessionID string, buffer int) *Subscription {
-	s := &subscriber{events: make(chan Event, buffer), errors: make(chan error, 1), done: make(chan struct{})}
+	return c.subscribeOwned(sessionID, buffer, false)
+}
+
+func (c *Client) subscribeTurn(sessionID string, buffer int) *Subscription {
+	return c.subscribeOwned(sessionID, buffer, true)
+}
+
+func (c *Client) subscribeOwned(sessionID string, buffer int, turn bool) *Subscription {
+	s := &subscriber{events: make(chan Event, buffer), errors: make(chan error, 1), done: make(chan struct{}), turn: turn}
 	id := c.nextSub.Add(1)
 	c.subsMu.Lock()
 	select {
@@ -554,13 +626,17 @@ func (c *Client) unsubscribe(id uint64) {
 }
 func (c *Client) subscriptionError(id uint64, fallback *subscriber) error {
 	c.subsMu.Lock()
-	defer c.subsMu.Unlock()
 	if sub := c.subs[id]; sub != nil && sub.err != nil {
-		return sub.err
+		err := sub.err
+		c.subsMu.Unlock()
+		return err
 	}
 	if fallback != nil && fallback.err != nil {
-		return fallback.err
+		err := fallback.err
+		c.subsMu.Unlock()
+		return err
 	}
+	c.subsMu.Unlock()
 	if c.State() == StateClosed {
 		return ErrClosed
 	}
@@ -611,7 +687,19 @@ func (c *Client) disconnect(err error, terminal bool) {
 			c.closeSubscriberLocked(id, sub, err)
 		}
 		c.subsMu.Unlock()
+	} else {
+		c.failTurnSubscribers(ErrDisconnected)
 	}
+}
+
+func (c *Client) failTurnSubscribers(err error) {
+	c.subsMu.Lock()
+	for id, sub := range c.subs {
+		if sub.turn {
+			c.closeSubscriberLocked(id, sub, err)
+		}
+	}
+	c.subsMu.Unlock()
 }
 
 func errorKind(err error) string {
@@ -723,6 +811,7 @@ func (c *Client) closeWith(err error) {
 		c.stateMu.Lock()
 		c.state = StateClosing
 		instance := c.instance
+		c.cancelBridgeMonitorLocked()
 		c.instance = nil
 		c.stateMu.Unlock()
 		c.emit(Observation{Kind: "state", State: StateClosing})

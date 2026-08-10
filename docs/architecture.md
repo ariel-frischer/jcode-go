@@ -135,7 +135,27 @@ The required semantic terminal classes are:
 - transport disconnect
 - local client closure through the existing `ErrClosed` contract
 
-`jcode-go-70h.4` owns the final exported result and error names. The result must provide a stable kind plus a wrapped cause so callers can use typed inspection or `errors.Is` and `errors.As` without parsing messages or raw frames.
+The exported terminal kinds and causes are fixed as follows:
+
+| Semantic class | `TurnResult.Kind` | Stable cause inspection |
+| --- | --- | --- |
+| successful completion | `TurnResultCompleted` (`"completed"`) | `Err == nil` |
+| explicit server cancellation | `TurnResultCanceled` (`"canceled"`) | `errors.Is(Err, ErrTurnCanceled)` |
+| lifecycle cancellation | `TurnResultLifecycleCanceled` (`"lifecycle_canceled"`) | lifecycle `context.Cause`, normally `context.Canceled` |
+| lifecycle deadline | `TurnResultLifecycleDeadlineExceeded` (`"lifecycle_deadline_exceeded"`) | lifecycle `context.Cause`, normally `context.DeadlineExceeded` |
+| provider failure | `TurnResultProviderError` (`"provider_error"`) | `errors.As` into `EventError` with the safe provider code |
+| protocol or framing failure | `TurnResultProtocolError` (`"protocol_error"`) | `errors.Is(Err, ErrProtocolFailure)` and an applicable framing sentinel |
+| subscriber overflow | `TurnResultSubscriberOverflow` (`"subscriber_overflow"`) | `errors.Is(Err, ErrSubscriberOverflow)` |
+| attached owned bridge exit | `TurnResultBridgeExited` (`"bridge_exited"`) | `errors.Is(Err, ErrBridgeExited)` |
+| transport disconnect | `TurnResultTransportDisconnected` (`"transport_disconnected"`) | `errors.Is(Err, ErrDisconnected)` |
+| local client close | `TurnResultClientClosed` (`"client_closed"`) | `errors.Is(Err, ErrClosed)` |
+
+Every producer commits through the same Turn mutex. The first locked terminal
+commit sets acceptance when necessary, stores the result, closes the terminal
+notification once, and makes every later signal a no-op. Error values may wrap
+the stable causes above, but an owned Turn never retains unsafe provider text,
+transport diagnostics, prompts, response content, raw frames, credentials,
+private paths, or session identifiers.
 
 The following are not terminal by themselves:
 
@@ -165,7 +185,11 @@ func (t *Turn) Cancel(ctx context.Context) error
 func (t *Turn) Wait(ctx context.Context) (TurnResult, error)
 ```
 
-The exact constant spelling for `TurnResultKind` belongs to `jcode-go-70h.4`, but the behavior and semantic classes above are fixed.
+The exact exported `TurnResultKind` constants and stable values are the ones in
+the terminal table above. `ErrTurnCanceled`, `ErrProtocolFailure`, and
+`ErrBridgeExited` are the only new sentinels; existing `EventError`, context
+causes, `ErrSubscriberOverflow`, `ErrDisconnected`, `ErrClosed`, and protocol
+framing sentinels retain their established inspection contracts.
 
 `StartTurn` must install its single underlying subscription before writing `send_message`. It returns after a successful write, not after acceptance. `Accepted` exposes acceptance separately from terminal completion. `Next` is the turn's ordered event consumer. `Wait` returns the immutable terminal result. Its second return value is only for interruption of that particular wait before a terminal result exists. Once terminal, `Wait` returns the stored result with a nil wait error.
 
@@ -204,7 +228,8 @@ The finite Linux guarantee applies to SDK-owned instances returned by `LaunchIns
 - A provider error is preserved as a typed cause with its stable code. Human-readable server text remains diagnostic and must not be used as a branch condition.
 - Fatal framing or protocol decode errors terminate the connection and every active turn using that connection.
 - An ordinary transport disconnect terminates an active `Turn` even though lower-level raw subscriptions may retain their existing explicit-reconnect behavior. Protocol v1 cannot replay the exact missed turn events, so an owned turn cannot safely resume as if uninterrupted.
-- For a launched client, an observed owned bridge process exit may be classified separately from an unowned socket disconnect. For `Connect`, no process ownership exists, so EOF is a transport disconnect.
+- Only the private turn-owned subscription installed by `StartTurn` is closed on an ordinary disconnect. Existing raw subscriptions remain caller-owned and available for explicit reconnect; the ended Turn is never revived.
+- For a launched client, the `launchedInstance` process wait fans out a private bridge-exit signal without consuming the shutdown wait result. `Client` watches it only while that exact SDK-owned instance remains attached. The shared Turn terminal commit decides bridge exit versus EOF or close races. For `Connect`, detached instances, and arbitrary transport errors, no positive process ownership evidence exists, so EOF is a transport disconnect.
 - Subscription overflow terminates only the affected raw subscription or turn. It must not block request correlation, the client reader, or other subscribers.
 - Shutdown continues through all safe cleanup phases after an error. The context-aware path returns joined or wrapped causes after cleanup attempts. Existing `Client.Close` retains its legacy return contract, so cleanup detail is exposed through direct instance shutdown and redacted observations rather than a breaking return change.
 - No failure value or observation may include prompts, credentials, response content, raw protocol frames, or private session identifiers.
