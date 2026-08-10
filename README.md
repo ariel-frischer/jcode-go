@@ -322,6 +322,8 @@ When `InheritLogins` is false, provide provider credentials explicitly through `
 
 The private example uses the lower-level process/sockets pattern intentionally, which is useful when a service must supervise the child itself. For most applications, prefer `jcode.Launch` so the SDK owns startup and cleanup. Verify bridge flags for the jcode version you ship before enabling custom supervision. If a private process must use credentials, provision a dedicated service identity instead of inheriting a developer's login files.
 
+Linux maintainers can run the deterministic private-runtime acceptance and the explicitly gated real OpenAI OAuth smoke described in [`docs/private-runtime-acceptance.md`](docs/private-runtime-acceptance.md).
+
 ## Security guidance
 
 - Unix sockets and runtime directories should be owner-only. Do not change permissions to make a shared socket world-readable.
