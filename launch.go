@@ -178,6 +178,9 @@ func ShutdownInstance(ctx context.Context, instance Instance) error {
 		return owned.shutdown(ctx)
 	}
 	err := instance.Shutdown()
+	if err == nil {
+		return nil
+	}
 	return errors.Join(context.Cause(ctx), err)
 }
 
@@ -282,8 +285,8 @@ func (i *launchedInstance) finishShutdown(phaseErr error) {
 	errs := make([]error, 0, len(i.shutdownContextErrs)+1)
 	if phaseErr != nil {
 		errs = append(errs, phaseErr)
+		errs = append(errs, i.shutdownContextErrs...)
 	}
-	errs = append(errs, i.shutdownContextErrs...)
 	i.shutdownErr = errors.Join(errs...)
 	i.shutdownFinished = true
 	close(i.shutdownDone)
@@ -832,9 +835,13 @@ func removeOwnedRuntimePaths(home, runtimeDir string, ownedPaths []string, timeo
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 	for {
-		lastErr = removeOwnedRuntimePathsOnce(runtimeDir, ownedPaths)
+		var permanent bool
+		lastErr, permanent = removeOwnedRuntimePathsOnce(runtimeDir, ownedPaths)
 		if lastErr == nil {
 			return nil
+		}
+		if permanent {
+			return fmt.Errorf("clean owned runtime paths: %w", lastErr)
 		}
 		if !time.Now().Before(deadline) {
 			return fmt.Errorf("clean owned runtime paths: %w", lastErr)
@@ -846,8 +853,9 @@ func removeOwnedRuntimePaths(home, runtimeDir string, ownedPaths []string, timeo
 	}
 }
 
-func removeOwnedRuntimePathsOnce(runtimeDir string, ownedPaths []string) error {
+func removeOwnedRuntimePathsOnce(runtimeDir string, ownedPaths []string) (error, bool) {
 	var errs []error
+	permanent := false
 	for _, path := range ownedPaths {
 		info, err := os.Lstat(path)
 		if os.IsNotExist(err) {
@@ -855,11 +863,13 @@ func removeOwnedRuntimePathsOnce(runtimeDir string, ownedPaths []string) error {
 		}
 		if err != nil {
 			errs = append(errs, fmt.Errorf("inspect owned runtime file: %w", err))
+			permanent = true
 			continue
 		}
 		if info.Mode()&os.ModeSymlink != 0 || info.IsDir() ||
 			(!info.Mode().IsRegular() && info.Mode()&os.ModeSocket == 0) {
 			errs = append(errs, errors.New("owned runtime file has an unsafe type"))
+			permanent = true
 			continue
 		}
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
@@ -867,22 +877,22 @@ func removeOwnedRuntimePathsOnce(runtimeDir string, ownedPaths []string) error {
 		}
 	}
 	if len(errs) != 0 {
-		return errors.Join(errs...)
+		return errors.Join(errs...), permanent
 	}
 	entries, err := os.ReadDir(runtimeDir)
 	if os.IsNotExist(err) {
-		return nil
+		return nil, false
 	}
 	if err != nil {
-		return fmt.Errorf("inspect owned runtime directory contents: %w", err)
+		return fmt.Errorf("inspect owned runtime directory contents: %w", err), false
 	}
 	if len(entries) != 0 {
-		return nil
+		return nil, false
 	}
 	if err := os.Remove(runtimeDir); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove empty owned runtime directory: %w", err)
+		return fmt.Errorf("remove empty owned runtime directory: %w", err), false
 	}
-	return nil
+	return nil, false
 }
 
 func removeOwnedInstanceHome(home string, timeout time.Duration) error {
@@ -903,8 +913,12 @@ func removeOwnedInstanceHome(home string, timeout time.Duration) error {
 	var lastErr error
 	for {
 		lastErr = os.RemoveAll(clean)
-		if _, err := os.Lstat(clean); os.IsNotExist(err) {
+		_, statErr := os.Lstat(clean)
+		if os.IsNotExist(statErr) {
 			return nil
+		}
+		if statErr != nil {
+			return errors.Join(lastErr, fmt.Errorf("inspect ephemeral instance home after removal: %w", statErr))
 		}
 		if !time.Now().Before(deadline) {
 			if lastErr == nil {

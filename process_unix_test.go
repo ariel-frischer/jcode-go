@@ -74,7 +74,7 @@ func TestShutdownProcessGroupEscalatesAfterGrace(t *testing.T) {
 	assertProcessTerminated(t, process.cmd.Process.Pid)
 }
 
-func TestShutdownKillsTERMInheritingDescendant(t *testing.T) {
+func TestShutdownKillsTERMInheritingGroupBeforeLeaderReap(t *testing.T) {
 	process := startLinuxHelper(t, "descendant")
 	data, err := os.ReadFile(process.childPIDPath)
 	if err != nil {
@@ -101,8 +101,8 @@ func TestShutdownCancellationForcesEscalationButStillReaps(t *testing.T) {
 
 	started := time.Now()
 	err := ShutdownInstance(ctx, instance)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("ShutdownInstance() error = %v, want context canceled", err)
+	if err != nil {
+		t.Fatalf("ShutdownInstance() error = %v, want nil after successful forced shutdown", err)
 	}
 	if elapsed := time.Since(started); elapsed >= time.Second {
 		t.Fatalf("canceled shutdown took %s, want immediate escalation", elapsed)
@@ -118,13 +118,129 @@ func TestShutdownDeadlineDuringGraceForcesEscalation(t *testing.T) {
 
 	started := time.Now()
 	err := ShutdownInstance(ctx, instance)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("ShutdownInstance() error = %v, want deadline exceeded", err)
+	if err != nil {
+		t.Fatalf("ShutdownInstance() error = %v, want nil after successful forced shutdown", err)
 	}
 	if elapsed := time.Since(started); elapsed >= 2*time.Second {
 		t.Fatalf("deadline-triggered shutdown took %s, want grace shortened", elapsed)
 	}
 	assertProcessTerminated(t, process.cmd.Process.Pid)
+}
+
+func TestShutdownCancellationIsPreservedAlongsidePhaseFailure(t *testing.T) {
+	instance := &launchedInstance{processGroupID: 1, cleanupTimeout: 20 * time.Millisecond}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := ShutdownInstance(ctx, instance)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ShutdownInstance() error = %v, want context canceled joined to phase failure", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "invalid owned process group") {
+		t.Fatalf("ShutdownInstance() error = %v, want process-group phase failure", err)
+	}
+}
+
+func TestTerminateProcessDoesNotInspectOrSignalAfterWaitReceived(t *testing.T) {
+	var signals []syscall.Signal
+	aliveCalls := 0
+	operations := processGroupOperations{
+		signal: func(_ int, signal syscall.Signal) error {
+			signals = append(signals, signal)
+			return nil
+		},
+		alive: func(int) (bool, error) {
+			aliveCalls++
+			return true, nil
+		},
+	}
+
+	_, err := terminateProcessGroup(42, closedWaitResult(nil), time.Second, time.Second, nil, operations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(signals) != 0 {
+		t.Fatalf("signals = %v, want none after observing reap", signals)
+	}
+	if aliveCalls != 0 {
+		t.Fatalf("post-reap liveness checks = %d, want 0", aliveCalls)
+	}
+}
+
+func TestTerminateProcessDoesNotInspectOrKillWhenWaitArrivesAfterTERM(t *testing.T) {
+	waitDone := make(chan error, 1)
+	var signals []syscall.Signal
+	aliveCalls := 0
+	operations := processGroupOperations{
+		signal: func(_ int, signal syscall.Signal) error {
+			signals = append(signals, signal)
+			if signal == syscall.SIGTERM {
+				waitDone <- nil
+			}
+			return nil
+		},
+		alive: func(int) (bool, error) {
+			aliveCalls++
+			return true, nil
+		},
+	}
+
+	_, err := terminateProcessGroup(42, waitDone, time.Second, time.Second, nil, operations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(signals) != 1 || signals[0] != syscall.SIGTERM {
+		t.Fatalf("signals = %v, want only SIGTERM before observing reap", signals)
+	}
+	if aliveCalls != 0 {
+		t.Fatalf("post-reap liveness checks = %d, want 0", aliveCalls)
+	}
+}
+
+func TestTerminateProcessAggregatesUnreapedEscalationErrors(t *testing.T) {
+	termErr := errors.New("term failed")
+	killErr := errors.New("kill failed")
+	operations := processGroupOperations{
+		signal: func(_ int, signal syscall.Signal) error {
+			if signal == syscall.SIGTERM {
+				return termErr
+			}
+			return killErr
+		},
+		alive: func(int) (bool, error) { return true, nil },
+	}
+
+	started := time.Now()
+	_, err := terminateProcessGroup(42, make(chan error), time.Millisecond, 10*time.Millisecond, nil, operations)
+	if !errors.Is(err, termErr) || !errors.Is(err, killErr) || !strings.Contains(err.Error(), "reap") {
+		t.Fatalf("terminateProcessGroup() error = %v, want TERM, KILL, and reap errors", err)
+	}
+	if elapsed := time.Since(started); elapsed >= time.Second {
+		t.Fatalf("terminateProcessGroup() took %s, want finite escalation", elapsed)
+	}
+}
+
+func TestTerminateProcessBoundsReapWhenUnreapedGroupIsAbsent(t *testing.T) {
+	var signals []syscall.Signal
+	operations := processGroupOperations{
+		signal: func(_ int, signal syscall.Signal) error {
+			signals = append(signals, signal)
+			return nil
+		},
+		alive: func(int) (bool, error) { return false, nil },
+	}
+
+	started := time.Now()
+	_, err := terminateProcessGroup(42, make(chan error), time.Millisecond, 10*time.Millisecond, nil, operations)
+	if err == nil || !strings.Contains(err.Error(), "reap") {
+		t.Fatalf("terminateProcessGroup() error = %v, want bounded reap timeout", err)
+	}
+	if len(signals) != 1 || signals[0] != syscall.SIGTERM {
+		t.Fatalf("signals = %v, want TERM without KILL for absent group", signals)
+	}
+	if elapsed := time.Since(started); elapsed >= time.Second {
+		t.Fatalf("terminateProcessGroup() took %s, want finite reap", elapsed)
+	}
 }
 
 func TestShutdownBoundedWhenWaitResultIsWithheld(t *testing.T) {
@@ -404,6 +520,55 @@ func TestShutdownCleanupContinuesAfterRuntimePathError(t *testing.T) {
 	}
 }
 
+func TestRemoveOwnedRuntimePathsReturnsUnsafeTypeWithoutRetrying(t *testing.T) {
+	home := t.TempDir()
+	runtimeDir := filepath.Join(home, "run")
+	if err := os.Mkdir(runtimeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	unsafePath := filepath.Join(runtimeDir, "jcode-api.sock")
+	if err := os.Symlink(filepath.Join(t.TempDir(), "outside"), unsafePath); err != nil {
+		t.Fatal(err)
+	}
+
+	started := time.Now()
+	err := removeOwnedRuntimePaths(home, runtimeDir, []string{unsafePath}, 300*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "unsafe type") {
+		t.Fatalf("removeOwnedRuntimePaths() error = %v, want unsafe type", err)
+	}
+	if elapsed := time.Since(started); elapsed >= 100*time.Millisecond {
+		t.Fatalf("permanent cleanup error returned after %s, want no retry", elapsed)
+	}
+}
+
+func TestRemoveOwnedRuntimePathsReturnsLstatErrorWithoutRetrying(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory search permission checks")
+	}
+	home := t.TempDir()
+	runtimeDir := filepath.Join(home, "run")
+	if err := os.Mkdir(runtimeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ownedPath := filepath.Join(runtimeDir, "jcode-api.sock")
+	if err := os.WriteFile(ownedPath, []byte("owned"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(runtimeDir, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(runtimeDir, 0o700) })
+
+	started := time.Now()
+	err := removeOwnedRuntimePaths(home, runtimeDir, []string{ownedPath}, 300*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "inspect owned runtime file") {
+		t.Fatalf("removeOwnedRuntimePaths() error = %v, want Lstat error", err)
+	}
+	if elapsed := time.Since(started); elapsed >= 100*time.Millisecond {
+		t.Fatalf("permanent Lstat error returned after %s, want no retry", elapsed)
+	}
+}
+
 func TestLaunchInstanceRejectsSymlinkRuntimeBeforeRemovingPaths(t *testing.T) {
 	home := t.TempDir()
 	outside := t.TempDir()
@@ -535,8 +700,8 @@ func TestShutdownInstancePreservesExternalInstanceCompatibility(t *testing.T) {
 	cancel()
 
 	err := ShutdownInstance(ctx, instance)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("ShutdownInstance() error = %v, want context canceled", err)
+	if err != nil {
+		t.Fatalf("ShutdownInstance() error = %v, want nil after successful external shutdown", err)
 	}
 	if instance.shutdowns.Load() != 1 {
 		t.Fatalf("external instance shutdowns = %d, want 1", instance.shutdowns.Load())
@@ -665,13 +830,33 @@ func processIsRunning(pid int) bool {
 		return true
 	}
 	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
-	if err == nil {
-		fields := strings.Fields(string(data))
-		if len(fields) > 2 && fields[2] == "Z" {
-			return false
-		}
+	if err == nil && procStatState(data) == "Z" {
+		return false
 	}
 	return true
+}
+
+func procStatState(data []byte) string {
+	text := string(data)
+	commandEnd := strings.LastIndexByte(text, ')')
+	if commandEnd < 0 {
+		return ""
+	}
+	fields := strings.Fields(text[commandEnd+1:])
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
+}
+
+func TestProcStatStateParsesAfterFinalCommandParenthesis(t *testing.T) {
+	stat := []byte("123 (worker name) with ) characters) Z 1 2 3")
+	if state := procStatState(stat); state != "Z" {
+		t.Fatalf("procStatState() = %q, want Z", state)
+	}
+	if state := procStatState([]byte("malformed")); state != "" {
+		t.Fatalf("procStatState(malformed) = %q, want empty", state)
+	}
 }
 
 func TestLinuxPrivateProcessHelper(t *testing.T) {
@@ -726,7 +911,7 @@ func TestLinuxPrivateProcessHelper(t *testing.T) {
 			continue
 		}
 		_ = os.WriteFile(termPath, []byte("term"), 0o600)
-		if mode == "cooperative" || mode == "descendant" {
+		if mode == "cooperative" {
 			return
 		}
 	}
