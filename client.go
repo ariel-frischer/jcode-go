@@ -171,6 +171,25 @@ func (c *Client) setInstance(instance Instance) {
 	c.stateMu.Lock()
 	c.instance = instance
 	c.stateMu.Unlock()
+	if source, ok := instance.(interface{ bridgeExited() <-chan struct{} }); ok {
+		if exited := source.bridgeExited(); exited != nil {
+			go c.watchBridgeExit(instance, exited)
+		}
+	}
+}
+
+func (c *Client) watchBridgeExit(instance Instance, exited <-chan struct{}) {
+	select {
+	case <-exited:
+	case <-c.closed:
+		return
+	}
+	c.stateMu.RLock()
+	attached := c.instance == instance && c.state != StateClosing && c.state != StateClosed
+	c.stateMu.RUnlock()
+	if attached {
+		c.failTurnSubscribers(ErrBridgeExited)
+	}
 }
 
 // DetachInstance transfers ownership of a private runtime from the client to
@@ -197,6 +216,7 @@ type subscriber struct {
 	done   chan struct{}
 	once   sync.Once
 	err    error
+	turn   bool
 }
 
 type pendingRequest struct {
@@ -450,7 +470,15 @@ func (c *Client) Subscribe(sessionID string) *Subscription {
 }
 
 func (c *Client) subscribe(sessionID string, buffer int) *Subscription {
-	s := &subscriber{events: make(chan Event, buffer), errors: make(chan error, 1), done: make(chan struct{})}
+	return c.subscribeOwned(sessionID, buffer, false)
+}
+
+func (c *Client) subscribeTurn(sessionID string, buffer int) *Subscription {
+	return c.subscribeOwned(sessionID, buffer, true)
+}
+
+func (c *Client) subscribeOwned(sessionID string, buffer int, turn bool) *Subscription {
+	s := &subscriber{events: make(chan Event, buffer), errors: make(chan error, 1), done: make(chan struct{}), turn: turn}
 	id := c.nextSub.Add(1)
 	c.subsMu.Lock()
 	select {
@@ -611,7 +639,19 @@ func (c *Client) disconnect(err error, terminal bool) {
 			c.closeSubscriberLocked(id, sub, err)
 		}
 		c.subsMu.Unlock()
+	} else {
+		c.failTurnSubscribers(ErrDisconnected)
 	}
+}
+
+func (c *Client) failTurnSubscribers(err error) {
+	c.subsMu.Lock()
+	for id, sub := range c.subs {
+		if sub.turn {
+			c.closeSubscriberLocked(id, sub, err)
+		}
+	}
+	c.subsMu.Unlock()
 }
 
 func errorKind(err error) string {

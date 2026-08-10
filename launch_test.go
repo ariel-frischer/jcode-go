@@ -2,11 +2,13 @@ package jcode
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLaunchArgs(t *testing.T) {
@@ -32,6 +34,27 @@ func TestLaunchArgs(t *testing.T) {
 				t.Fatalf("launchArgs() = %q, want %q", got, test.want)
 			}
 		})
+	}
+}
+
+func TestWaitForCommandExitFansOutWithoutConsumingShutdownResult(t *testing.T) {
+	cmd := exec.Command("sh", "-c", "exit 0")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitDone, bridgeDone := waitForCommandExit(cmd)
+	select {
+	case <-bridgeDone:
+	case <-time.After(time.Second):
+		t.Fatal("bridge exit signal was not closed")
+	}
+	select {
+	case err := <-waitDone:
+		if err != nil {
+			t.Fatalf("process wait error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("bridge signal consumed the shutdown wait result")
 	}
 }
 

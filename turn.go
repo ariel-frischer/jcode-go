@@ -14,9 +14,18 @@ import (
 // message, which cannot have an owned turn lifecycle.
 var ErrTurnNoReply = errors.New("jcode turn does not support no-reply messages")
 
-// TurnResultKind identifies the semantic terminal class of a turn. Exported
-// constants and the complete terminal taxonomy are intentionally left to the
-// terminal-outcome API that extends this initial surface.
+var (
+	// ErrTurnCanceled reports explicit server-side cancellation of an owned turn.
+	ErrTurnCanceled = errors.New("jcode turn canceled")
+	// ErrProtocolFailure reports that an owned turn ended because protocol input
+	// could not be framed, validated, or decoded safely.
+	ErrProtocolFailure = errors.New("jcode turn protocol failure")
+	// ErrBridgeExited reports positive evidence that the SDK-owned bridge process
+	// attached to the client exited.
+	ErrBridgeExited = errors.New("jcode bridge exited")
+)
+
+// TurnResultKind identifies the stable semantic terminal class of a turn.
 type TurnResultKind string
 
 // TurnResult is the immutable outcome stored by a Turn. Err preserves the
@@ -27,12 +36,26 @@ type TurnResult struct {
 }
 
 const (
-	turnResultCompleted         TurnResultKind = "completed"
-	turnResultCanceled          TurnResultKind = "canceled"
-	turnResultLifecycleCanceled TurnResultKind = "lifecycle_canceled"
-	turnResultLifecycleDeadline TurnResultKind = "lifecycle_deadline_exceeded"
-	turnResultProviderError     TurnResultKind = "provider_error"
-	turnResultFailed            TurnResultKind = "failed"
+	// TurnResultCompleted reports successful turn completion.
+	TurnResultCompleted TurnResultKind = "completed"
+	// TurnResultCanceled reports explicit server-side turn cancellation.
+	TurnResultCanceled TurnResultKind = "canceled"
+	// TurnResultLifecycleCanceled reports local lifecycle context cancellation.
+	TurnResultLifecycleCanceled TurnResultKind = "lifecycle_canceled"
+	// TurnResultLifecycleDeadlineExceeded reports local lifecycle deadline expiry.
+	TurnResultLifecycleDeadlineExceeded TurnResultKind = "lifecycle_deadline_exceeded"
+	// TurnResultProviderError reports a provider failure event.
+	TurnResultProviderError TurnResultKind = "provider_error"
+	// TurnResultProtocolError reports invalid framing, protocol data, or typed event data.
+	TurnResultProtocolError TurnResultKind = "protocol_error"
+	// TurnResultSubscriberOverflow reports a bounded event queue overflow.
+	TurnResultSubscriberOverflow TurnResultKind = "subscriber_overflow"
+	// TurnResultBridgeExited reports exit of the attached SDK-owned bridge.
+	TurnResultBridgeExited TurnResultKind = "bridge_exited"
+	// TurnResultTransportDisconnected reports loss of the client transport.
+	TurnResultTransportDisconnected TurnResultKind = "transport_disconnected"
+	// TurnResultClientClosed reports local Client.Close termination.
+	TurnResultClientClosed TurnResultKind = "client_closed"
 )
 
 type turnState uint8
@@ -190,8 +213,7 @@ func (t *Turn) dispatch() {
 	for {
 		event, err := t.subscription.Next(context.Background())
 		if err != nil {
-			wrapped := fmt.Errorf("receive turn event: %w", err)
-			t.finishTerminal(TurnResult{Kind: turnResultFailed, Err: wrapped})
+			t.finishTerminal(turnResultFromSubscriptionError(err))
 			return
 		}
 
@@ -207,14 +229,13 @@ func (t *Turn) dispatch() {
 		if value, ok := event.Frame.Event.(protocol.Error); ok {
 			cause := EventError{Code: value.Code}
 			wrapped := fmt.Errorf("turn failed: %w", cause)
-			t.finishTerminal(TurnResult{Kind: turnResultProviderError, Err: wrapped})
+			t.finishTerminal(TurnResult{Kind: TurnResultProviderError, Err: wrapped})
 			return
 		}
 
 		typed, err := decodeTypedEvent(event)
 		if err != nil {
-			wrapped := fmt.Errorf("decode turn event: %w", err)
-			t.finishTerminal(TurnResult{Kind: turnResultFailed, Err: wrapped})
+			t.finishTerminal(TurnResult{Kind: TurnResultProtocolError, Err: protocolTurnError(err)})
 			return
 		}
 		terminalEvent := event.Kind == "turn_done"
@@ -223,8 +244,7 @@ func (t *Turn) dispatch() {
 			return
 		}
 		if !t.publishEvent(typed) {
-			wrapped := fmt.Errorf("buffer turn event: %w", ErrSubscriberOverflow)
-			t.finishTerminal(TurnResult{Kind: turnResultFailed, Err: wrapped})
+			t.finishTerminal(TurnResult{Kind: TurnResultSubscriberOverflow, Err: ErrSubscriberOverflow})
 			return
 		}
 	}
@@ -257,32 +277,18 @@ func (t *Turn) finishTurnDone(event TypedEvent) bool {
 	select {
 	case t.events <- event:
 	default:
-		wrapped := fmt.Errorf("buffer terminal turn event: %w", ErrSubscriberOverflow)
-		if !t.acceptanceSet {
-			t.acceptanceSet = true
-			t.acceptanceErr = wrapped
-			close(t.acceptedDone)
-		}
-		t.terminal = true
-		t.state = turnTerminal
-		t.result = TurnResult{Kind: turnResultFailed, Err: wrapped}
-		close(t.terminalDone)
+		t.finishTerminalLocked(TurnResult{Kind: TurnResultSubscriberOverflow, Err: ErrSubscriberOverflow})
 		t.mu.Unlock()
 		t.subscription.Close()
 		return false
 	}
-	if !t.acceptanceSet {
-		t.acceptanceSet = true
-		close(t.acceptedDone)
-	}
-	kind := turnResultCompleted
+	kind := TurnResultCompleted
+	var err error
 	if t.cancelRequested {
-		kind = turnResultCanceled
+		kind = TurnResultCanceled
+		err = ErrTurnCanceled
 	}
-	t.terminal = true
-	t.state = turnTerminal
-	t.result = TurnResult{Kind: kind}
-	close(t.terminalDone)
+	t.finishTerminalLocked(TurnResult{Kind: kind, Err: err})
 	t.mu.Unlock()
 	t.subscription.Close()
 	return true
@@ -291,9 +297,9 @@ func (t *Turn) finishTurnDone(event TypedEvent) bool {
 func (t *Turn) watchLifecycle(ctx context.Context) {
 	select {
 	case <-ctx.Done():
-		kind := turnResultLifecycleCanceled
+		kind := TurnResultLifecycleCanceled
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			kind = turnResultLifecycleDeadline
+			kind = TurnResultLifecycleDeadlineExceeded
 		}
 		cause := context.Cause(ctx)
 		if cause == nil {
@@ -390,8 +396,17 @@ func (t *Turn) finishAcceptance(err error) {
 
 func (t *Turn) finishTerminal(result TurnResult) bool {
 	t.mu.Lock()
-	if t.terminal {
+	if !t.finishTerminalLocked(result) {
 		t.mu.Unlock()
+		return false
+	}
+	t.mu.Unlock()
+	t.subscription.Close()
+	return true
+}
+
+func (t *Turn) finishTerminalLocked(result TurnResult) bool {
+	if t.terminal {
 		return false
 	}
 	if !t.acceptanceSet {
@@ -403,9 +418,38 @@ func (t *Turn) finishTerminal(result TurnResult) bool {
 	t.state = turnTerminal
 	t.result = result
 	close(t.terminalDone)
-	t.mu.Unlock()
-	t.subscription.Close()
 	return true
+}
+
+func turnResultFromSubscriptionError(err error) TurnResult {
+	switch {
+	case errors.Is(err, ErrBridgeExited):
+		return TurnResult{Kind: TurnResultBridgeExited, Err: ErrBridgeExited}
+	case errors.Is(err, ErrClosed):
+		return TurnResult{Kind: TurnResultClientClosed, Err: ErrClosed}
+	case errors.Is(err, ErrSubscriberOverflow):
+		return TurnResult{Kind: TurnResultSubscriberOverflow, Err: ErrSubscriberOverflow}
+	case isProtocolError(err):
+		return TurnResult{Kind: TurnResultProtocolError, Err: protocolTurnError(err)}
+	default:
+		return TurnResult{Kind: TurnResultTransportDisconnected, Err: ErrDisconnected}
+	}
+}
+
+func isProtocolError(err error) bool {
+	return errors.Is(err, protocol.ErrMalformedFrame) ||
+		errors.Is(err, protocol.ErrInvalidFrame) ||
+		errors.Is(err, protocol.ErrFrameTooLarge)
+}
+
+func protocolTurnError(err error) error {
+	causes := []error{ErrProtocolFailure}
+	for _, sentinel := range []error{protocol.ErrMalformedFrame, protocol.ErrInvalidFrame, protocol.ErrFrameTooLarge} {
+		if errors.Is(err, sentinel) {
+			causes = append(causes, sentinel)
+		}
+	}
+	return errors.Join(causes...)
 }
 
 func (t *Turn) acceptanceResult() (error, bool) {

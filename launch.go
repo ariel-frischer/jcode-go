@@ -145,6 +145,7 @@ type launchedInstance struct {
 	processGroupID        int
 	daemonPID             int
 	waitDone              <-chan error
+	bridgeDone            <-chan struct{}
 	shutdownMu            sync.Mutex
 	shutdownStarted       bool
 	shutdownFinished      bool
@@ -158,6 +159,9 @@ type launchedInstance struct {
 func (i *launchedInstance) SocketPath() string { return i.socketPath }
 func (i *launchedInstance) JcodeHome() string  { return i.jcodeHome }
 func (i *launchedInstance) Close() error       { return i.Shutdown() }
+func (i *launchedInstance) bridgeExited() <-chan struct{} {
+	return i.bridgeDone
+}
 
 func (i *launchedInstance) Shutdown() error {
 	return i.shutdown(context.Background())
@@ -444,8 +448,7 @@ func launchInstanceWithObserver(options LaunchOptions, observer Observer) (Insta
 	} else {
 		stderrDone <- ""
 	}
-	waitDone := make(chan error, 1)
-	go func() { waitDone <- cmd.Wait() }()
+	waitDone, bridgeDone := waitForCommandExit(cmd)
 	emitLaunchObservation(observer, Observation{Kind: "launch_wait_socket"})
 	deadline := time.Now().Add(o.StartupTimeout)
 	for time.Now().Before(deadline) {
@@ -455,7 +458,7 @@ func launchInstanceWithObserver(options LaunchOptions, observer Observer) (Insta
 				ownedPaths: ownedPaths, ephemeral: ephemeral, cleanupTimeout: o.CleanupTimeout,
 				shutdownGracePeriod: o.ShutdownGracePeriod, shutdownReapTimeout: o.ShutdownReapTimeout,
 				cmd: cmd, processGroupID: processGroupID, daemonPID: readDaemonPID(home, runtimeDir),
-				waitDone: waitDone}, nil
+				waitDone: waitDone, bridgeDone: bridgeDone}, nil
 		}
 		select {
 		case waitErr := <-waitDone:
@@ -474,6 +477,16 @@ func launchInstanceWithObserver(options LaunchOptions, observer Observer) (Insta
 	emitLaunchObservation(observer, Observation{Kind: "launch_socket_timeout", Error: string(LaunchStartupTimeout)})
 	return nil, &LaunchError{Code: LaunchStartupTimeout, Binary: binary, Stderr: redactSecrets(stderrText, o.Env),
 		Err: errors.Join(fmt.Errorf("no API socket at %s within %s", socketPath, o.StartupTimeout), terminationErr)}
+}
+
+func waitForCommandExit(cmd *exec.Cmd) (<-chan error, <-chan struct{}) {
+	waitDone := make(chan error, 1)
+	bridgeDone := make(chan struct{})
+	go func() {
+		waitDone <- cmd.Wait()
+		close(bridgeDone)
+	}()
+	return waitDone, bridgeDone
 }
 
 func launchArgs(options LaunchOptions, socketPath string) []string {

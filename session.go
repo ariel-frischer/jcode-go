@@ -191,12 +191,13 @@ func (s Session) StartTurn(lifecycleCtx context.Context, content string, options
 	// The Turn owns this single subscription until its first terminal result.
 	// The internal subscription reserves slots for acceptance and the event that
 	// proves the public Turn queue has reached its configured bound.
-	subscription := s.client.subscribe(s.ID, s.client.options.EventBuffer+2)
+	subscription := s.client.subscribeTurn(s.ID, s.client.options.EventBuffer+2)
 	turn := newTurn(s.client, s.ID, subscription)
 	turn.start(lifecycleCtx)
 	if err := s.client.Notify(req); err != nil {
-		wrapped := fmt.Errorf("send turn message: %w", err)
-		turn.finishTerminal(TurnResult{Kind: turnResultFailed, Err: wrapped})
+		result := turnResultFromSubscriptionError(err)
+		wrapped := fmt.Errorf("send turn message: %w", result.Err)
+		turn.finishTerminal(result)
 		return nil, wrapped
 	}
 	turn.markWriteComplete()
