@@ -169,6 +169,13 @@ func (s Session) StartTurn(lifecycleCtx context.Context, content string, options
 	if lifecycleCtx == nil {
 		lifecycleCtx = context.Background()
 	}
+	if err := lifecycleCtx.Err(); err != nil {
+		cause := context.Cause(lifecycleCtx)
+		if cause == nil {
+			cause = err
+		}
+		return nil, fmt.Errorf("start turn lifecycle: %w", cause)
+	}
 
 	images := make([][2]string, len(options.Images))
 	copy(images, options.Images)
@@ -182,7 +189,9 @@ func (s Session) StartTurn(lifecycleCtx context.Context, content string, options
 	}
 
 	// The Turn owns this single subscription until its first terminal result.
-	subscription := s.client.Subscribe(s.ID)
+	// The internal subscription reserves slots for acceptance and the event that
+	// proves the public Turn queue has reached its configured bound.
+	subscription := s.client.subscribe(s.ID, s.client.options.EventBuffer+2)
 	turn := newTurn(s.client, s.ID, subscription)
 	turn.start(lifecycleCtx)
 	if err := s.client.Notify(req); err != nil {

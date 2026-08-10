@@ -1,0 +1,164 @@
+feature:
+  branch: agent/jcode-go-70h-2
+  created: 2026-08-10
+  status: Completed
+  input: 'Implement Bead jcode-go-70h.2: an owned cancellable Turn lifecycle API exactly within docs/architecture.md and docs/sdk-stability-plan.md.'
+user_stories:
+  - id: US-001
+    title: Own one complete turn lifecycle
+    priority: P0
+    as_a: Go SDK caller
+    i_want: to start a turn, observe acceptance, consume ordered typed events, and wait for one result
+    so_that: prompt acceptance and completion are represented by one race-safe handle
+    why_this_priority: This is the required foundation for downstream lifecycle integration.
+    independent_test: Emit fast acceptance, ordered events, and turn_done from a deterministic fake harness and verify Accepted, Next, and concurrent Wait.
+    acceptance_scenarios:
+      - given: acceptance arrives immediately after send_message
+        when: StartTurn returns and Accepted is called
+        then: acceptance is not missed
+      - given: typed events and turn_done arrive in order
+        when: Next and Wait run concurrently
+        then: events retain order and all waits return one immutable result
+  - id: US-002
+    title: Cancel a live turn exactly once
+    priority: P0
+    as_a: Go SDK caller supervising a live turn
+    i_want: repeated Cancel calls to share one SDK-owned protocol request
+    so_that: cancellation is never duplicated or retried after an uncertain outcome
+    why_this_priority: Duplicate mutating operations violate the ownership contract.
+    independent_test: Race Cancel callers, observe one cancel frame, send ok immediately followed by turn_done, and verify explicit cancellation.
+    acceptance_scenarios:
+      - given: concurrent callers cancel one turn
+        when: their wait contexts differ
+        then: one cancel request runs and callers share its result
+      - given: cancel ok precedes turn_done on the wire
+        when: Wait completes
+        then: the result is explicit server cancellation rather than natural completion
+  - id: US-003
+    title: Preserve legacy session APIs
+    priority: P0
+    as_a: existing jcode-go caller
+    i_want: Session.Send and Session.Events to retain their behavior
+    so_that: adopting Turn remains optional and source-compatible
+    why_this_priority: The architecture preserves all protocol v1 raw and typed APIs.
+    independent_test: Verify fast Send acceptance, NoReply notification behavior, and independent caller-owned Events.
+    acceptance_scenarios:
+      - given: a legacy Send call
+        when: message_accepted arrives
+        then: Send returns without waiting for turn_done
+      - given: a legacy Events stream
+        when: a typed event arrives and Close is called
+        then: the event is delivered and the caller-owned subscription closes
+requirements:
+  functional:
+    - id: FR-001
+      description: MUST add Turn, TurnResultKind, TurnResult, Session.StartTurn, Accepted, Next, Cancel, and Wait as minimal additive APIs.
+      testable: true
+      acceptance_criteria: Public signatures compile without changing existing signatures.
+    - id: FR-002
+      description: MUST install exactly one underlying subscription before send_message and return StartTurn after a successful write.
+      testable: true
+      acceptance_criteria: Fast acceptance is never missed and exactly one subscription is allocated.
+    - id: FR-003
+      description: MUST reject NoReply and an already-ended lifecycle before subscription or write.
+      testable: true
+      acceptance_criteria: No request or subscription ID advances for either rejected start.
+    - id: FR-004
+      description: MUST use one internal dispatcher as the sole raw Subscription reader and preserve ordered typed Next events.
+      testable: true
+      acceptance_criteria: Accepted, Next, and Wait do not steal or reorder events.
+    - id: FR-005
+      description: MUST record exactly one immutable first-terminal-wins TurnResult.
+      testable: true
+      acceptance_criteria: Concurrent and repeated Wait calls return the same result.
+    - id: FR-006
+      description: MUST record lifecycle cancellation or deadline locally without sending protocol cancel and preserve context causes.
+      testable: true
+      acceptance_criteria: errors.Is finds cancellation, deadline, and custom cancellation causes and no cancel frame is written.
+    - id: FR-007
+      description: MUST construct one correlated protocol cancel request in the SDK and share the first attempt and result.
+      testable: true
+      acceptance_criteria: Concurrent and duplicate calls produce one frame and no retry.
+    - id: FR-008
+      description: MUST serialize a successful cancel reply before a following turn_done and keep cancel success non-terminal by itself.
+      testable: true
+      acceptance_criteria: Immediate ok then turn_done is always canceled; Wait stays pending after ok until terminal.
+    - id: FR-009
+      description: MUST preserve provider error codes as inspectable causes while redacting provider text from new Turn errors.
+      testable: true
+      acceptance_criteria: errors.As finds EventError Code with empty Message and no sensitive text.
+    - id: FR-010
+      description: MUST preserve Session.Send, Session.Events, raw APIs, Client.Close, and source compatibility.
+      testable: true
+      acceptance_criteria: Compatibility tests and the existing repository suite pass.
+  non_functional:
+    - id: NFR-001
+      category: reliability
+      description: Turn lifecycle synchronization must be race-safe and bounded.
+      measurable_target: Focused and full race-enabled tests report no races.
+    - id: NFR-002
+      category: security
+      description: New errors must not expose prompts, credentials, provider text, raw frames, or private session identifiers.
+      measurable_target: Redaction tests and diff review pass.
+    - id: NFR-003
+      category: code_quality
+      description: Changes remain minimal, Go-idiomatic, formatted, and inside Bead ownership.
+      measurable_target: gofmt, full tests, race tests, and git diff --check pass.
+success_criteria:
+  measurable_outcomes:
+    - id: SC-001
+      description: Callers can start, accept, stream, cancel, and wait through one handle.
+      metric: Deterministic lifecycle tests
+      target: All required lifecycle scenarios pass.
+    - id: SC-002
+      description: Cancellation is never duplicated or misclassified after a successful reply.
+      metric: Stress count for cancellation ordering tests
+      target: 1000 consecutive immediate-reply cases pass.
+    - id: SC-003
+      description: Existing callers remain compatible.
+      metric: Compatibility and repository tests
+      target: All tests pass unchanged outside additive coverage.
+key_entities:
+  - name: Turn
+    description: One owned prompt lifecycle with acceptance, event dispatch, cancellation, and terminal result.
+    attributes: [subscription, dispatcher, acceptance, cancellation attempt, terminal result]
+  - name: TurnResult
+    description: Minimal additive result shape whose final exported taxonomy belongs to jcode-go-70h.4.
+    attributes: [Kind, Err]
+  - name: Pending reply observer
+    description: Private Client ordering hook used only to serialize cancel ok before following asynchronous events.
+    attributes: [correlated reply, nonblocking callback]
+edge_cases:
+  - scenario: turn_done races ahead of the acceptance waiter.
+    expected_behavior: Successful completion implies acceptance.
+  - scenario: provider error occurs before or after acceptance.
+    expected_behavior: Wait records one redacted provider failure while prior acceptance remains successful.
+  - scenario: cancel ok and turn_done arrive back-to-back.
+    expected_behavior: The result is explicit server cancellation.
+  - scenario: natural turn_done arrives before the cancel reply.
+    expected_behavior: Natural completion wins immutably.
+  - scenario: a method-only wait context expires.
+    expected_behavior: Only that call returns a wrapped context error.
+  - scenario: public event consumption falls behind.
+    expected_behavior: Only the Turn terminates with ErrSubscriberOverflow.
+assumptions:
+  - Protocol v1 cancel is a correlated request containing session_id and returning ok or error.
+  - Protocol v1 turn_done has no cancellation reason, so locally serialized cancel acceptance determines classification.
+  - jcode-go-70h.4 will add the final exported result constants and complete transport taxonomy.
+constraints:
+  - Work only in the assigned worktree and branch.
+  - Preserve all APIs named by docs/architecture.md.
+  - Do not mutate Beads, push, merge main, delegate, or change providers.
+  - Commit only Bead-owned code, tests, and Autospec artifacts.
+out_of_scope:
+  - Final terminal taxonomy and complete transport or bridge mapping owned by jcode-go-70h.4.
+  - Retry, reconnect, request replay, provider fallback, Locus policy, and observability expansion.
+  - Linux process supervision owned by jcode-go-70h.3 and all Windows work.
+  - Live OAuth validation, README examples, and deployment.
+_meta:
+  version: 1.0.0
+  generator: autospec-fallback-review
+  generator_version: unavailable
+  created: '2026-08-10T18:53:00Z'
+  artifact_type: spec
+  fallback_reason: 'autospec specify first failed because the constitution was absent; autospec constitution then failed because it invoked jcode run with unsupported -c.'

@@ -348,6 +348,54 @@ func TestTurnCancelIsSentOnceAndShared(t *testing.T) {
 	}
 }
 
+func TestTurnCancelReplyImmediatelyFollowedByTerminalIsCanceled(t *testing.T) {
+	client, server := newTurnTestClient(t, Options{})
+	defer client.Close()
+	defer server.Close()
+
+	serverDone := make(chan error, 1)
+	go func() {
+		if _, err := receiveTurnRequest(server); err != nil {
+			serverDone <- err
+			return
+		}
+		if err := server.Send(mustEventFrame(t, "message_accepted", map[string]any{"session_id": "session_turn"})); err != nil {
+			serverDone <- err
+			return
+		}
+		cancel, err := receiveTurnRequest(server)
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if err := server.Send(mustServerFrame(t, cancel.ID, "ok", nil)); err != nil {
+			serverDone <- err
+			return
+		}
+		serverDone <- server.Send(mustEventFrame(t, "turn_done", map[string]any{"session_id": "session_turn"}))
+	}()
+
+	turn, err := (Session{client: client, ID: "session_turn"}).StartTurn(context.Background(), "prompt", SendOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := turn.Accepted(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := turn.Cancel(ctx); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	result, err := turn.Wait(ctx)
+	if err != nil || string(result.Kind) != "canceled" {
+		t.Fatalf("Wait result=%+v err=%v, want canceled", result, err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestTurnCancelContextOnlyInterruptsCallerWait(t *testing.T) {
 	client, server := newTurnTestClient(t, Options{})
 	defer client.Close()
@@ -567,6 +615,33 @@ func TestTurnLifecycleContextTerminatesLocallyWithoutServerCancel(t *testing.T) 
 	}
 }
 
+func TestTurnLifecycleContextPreservesCancellationCause(t *testing.T) {
+	client, server := newTurnTestClient(t, Options{})
+	defer client.Close()
+	defer server.Close()
+
+	go func() {
+		_, _ = receiveTurnRequest(server)
+		_ = server.Send(mustEventFrame(t, "message_accepted", map[string]any{"session_id": "session_turn"}))
+	}()
+	lifecycleCtx, cancelLifecycle := context.WithCancelCause(context.Background())
+	turn, err := (Session{client: client, ID: "session_turn"}).StartTurn(lifecycleCtx, "prompt", SendOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := turn.Accepted(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cause := errors.New("caller stopped lifecycle")
+	cancelLifecycle(cause)
+	result, err := turn.Wait(ctx)
+	if err != nil || !errors.Is(result.Err, cause) {
+		t.Fatalf("Wait result=%+v err=%v, want cause %v", result, err, cause)
+	}
+}
+
 func TestTurnWaitContextDoesNotChangeStoredResult(t *testing.T) {
 	client, server := newTurnTestClient(t, Options{})
 	defer client.Close()
@@ -594,6 +669,27 @@ func TestTurnWaitContextDoesNotChangeStoredResult(t *testing.T) {
 	result, err := turn.Wait(ctx)
 	if err != nil || string(result.Kind) != "completed" || result.Err != nil {
 		t.Fatalf("terminal Wait result=%+v err=%v", result, err)
+	}
+}
+
+func TestStartTurnRejectsEndedLifecycleBeforeWriting(t *testing.T) {
+	client, server := newTurnTestClient(t, Options{})
+	defer client.Close()
+	defer server.Close()
+
+	lifecycleCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	beforeRequests := client.nextID.Load()
+	beforeSubscriptions := client.nextSub.Load()
+	turn, err := (Session{client: client, ID: "session_turn"}).StartTurn(lifecycleCtx, "prompt", SendOptions{})
+	if turn != nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("StartTurn turn=%v err=%v, want context canceled", turn, err)
+	}
+	if after := client.nextID.Load(); after != beforeRequests {
+		t.Fatalf("request ID advanced from %d to %d", beforeRequests, after)
+	}
+	if after := client.nextSub.Load(); after != beforeSubscriptions {
+		t.Fatalf("subscription ID advanced from %d to %d", beforeSubscriptions, after)
 	}
 }
 

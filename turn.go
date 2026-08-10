@@ -295,7 +295,11 @@ func (t *Turn) watchLifecycle(ctx context.Context) {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			kind = turnResultLifecycleDeadline
 		}
-		wrapped := fmt.Errorf("turn lifecycle ended: %w", ctx.Err())
+		cause := context.Cause(ctx)
+		if cause == nil {
+			cause = ctx.Err()
+		}
+		wrapped := fmt.Errorf("turn lifecycle ended: %w", cause)
 		t.finishTerminal(TurnResult{Kind: kind, Err: wrapped})
 	case <-t.terminalDone:
 	}
@@ -304,10 +308,6 @@ func (t *Turn) watchLifecycle(ctx context.Context) {
 func (t *Turn) runCancel() {
 	err := t.requestCancel(context.Background())
 	t.mu.Lock()
-	if err == nil && !t.terminal {
-		t.cancelRequested = true
-		t.state = turnCancelRequested
-	}
 	t.cancelErr = err
 	close(t.cancelDone)
 	t.mu.Unlock()
@@ -320,7 +320,17 @@ func (t *Turn) requestCancel(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("encode turn cancellation: %w", err)
 	}
-	frame, err := t.client.Request(ctx, req)
+	frame, err := t.client.requestWithReplyObserver(ctx, req, func(frame protocol.ServerFrame) {
+		if _, ok := frame.Event.(protocol.OK); !ok {
+			return
+		}
+		t.mu.Lock()
+		if !t.terminal {
+			t.cancelRequested = true
+			t.state = turnCancelRequested
+		}
+		t.mu.Unlock()
+	})
 	if err != nil {
 		return fmt.Errorf("cancel turn: %w", err)
 	}

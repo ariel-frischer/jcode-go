@@ -156,7 +156,7 @@ type Client struct {
 	sessionID    string
 	writeMu      sync.Mutex
 	pendingMu    sync.Mutex
-	pending      map[uint64]chan protocol.ServerFrame
+	pending      map[uint64]pendingRequest
 	subsMu       sync.Mutex
 	subs         map[uint64]*subscriber
 	nextID       atomic.Uint64
@@ -199,6 +199,11 @@ type subscriber struct {
 	err    error
 }
 
+type pendingRequest struct {
+	reply   chan protocol.ServerFrame
+	onReply func(protocol.ServerFrame)
+}
+
 // NewClient starts reading from t and completes the protocol hello handshake.
 // The transport is closed if the handshake fails. Reconnect is always explicit.
 func NewClient(ctx context.Context, t transport.Transport, options Options) (*Client, error) {
@@ -212,7 +217,7 @@ func NewClient(ctx context.Context, t transport.Transport, options Options) (*Cl
 	c := &Client{
 		transport: transport.NewSafe(t), options: o, state: StateConnecting,
 		capabilities: make(map[string]struct{}), sessionID: o.SessionID,
-		pending: make(map[uint64]chan protocol.ServerFrame), subs: make(map[uint64]*subscriber),
+		pending: make(map[uint64]pendingRequest), subs: make(map[uint64]*subscriber),
 		closed: make(chan struct{}),
 	}
 	c.installDecoder(c.transport)
@@ -274,6 +279,13 @@ func (c *Client) handshake(ctx context.Context) error {
 }
 
 func (c *Client) request(ctx context.Context, req protocol.RawRequest, internal ...bool) (protocol.ServerFrame, error) {
+	return c.requestWithReplyObserver(ctx, req, nil, internal...)
+}
+
+// requestWithReplyObserver runs onReply on the reader goroutine after a
+// correlated reply is removed from the pending map and before any following
+// asynchronous event is dispatched. The observer must not block.
+func (c *Client) requestWithReplyObserver(ctx context.Context, req protocol.RawRequest, onReply func(protocol.ServerFrame), internal ...bool) (protocol.ServerFrame, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -291,7 +303,7 @@ func (c *Client) request(ctx context.Context, req protocol.RawRequest, internal 
 	id := c.nextID.Add(1)
 	reply := make(chan protocol.ServerFrame, 1)
 	c.pendingMu.Lock()
-	c.pending[id] = reply
+	c.pending[id] = pendingRequest{reply: reply, onReply: onReply}
 	c.pendingMu.Unlock()
 	frame := protocol.ClientFrame{V: protocol.APIVersionMajor, ID: id, Request: req}
 	c.writeMu.Lock()
@@ -434,7 +446,10 @@ func (c *Client) State() State { c.stateMu.RLock(); defer c.stateMu.RUnlock(); r
 // Subscribe receives asynchronous events. A full buffer terminates only that
 // subscription, keeping the reader bounded and other callers live.
 func (c *Client) Subscribe(sessionID string) *Subscription {
-	buffer := c.options.EventBuffer
+	return c.subscribe(sessionID, c.options.EventBuffer)
+}
+
+func (c *Client) subscribe(sessionID string, buffer int) *Subscription {
 	s := &subscriber{events: make(chan Event, buffer), errors: make(chan error, 1), done: make(chan struct{})}
 	id := c.nextSub.Add(1)
 	c.subsMu.Lock()
@@ -467,13 +482,16 @@ func (c *Client) readLoop(decoder *protocol.Decoder) {
 		}
 		if frame.ReplyTo != nil {
 			c.pendingMu.Lock()
-			reply := c.pending[*frame.ReplyTo]
-			if reply != nil {
+			pending, ok := c.pending[*frame.ReplyTo]
+			if ok {
 				delete(c.pending, *frame.ReplyTo)
 			}
 			c.pendingMu.Unlock()
-			if reply != nil {
-				reply <- frame
+			if ok {
+				if pending.onReply != nil {
+					pending.onReply(frame)
+				}
+				pending.reply <- frame
 			}
 			continue
 		}
@@ -582,10 +600,10 @@ func (c *Client) disconnect(err error, terminal bool) {
 	}
 	c.pendingMu.Lock()
 	pending := c.pending
-	c.pending = make(map[uint64]chan protocol.ServerFrame)
+	c.pending = make(map[uint64]pendingRequest)
 	c.pendingMu.Unlock()
-	for _, ch := range pending {
-		close(ch)
+	for _, request := range pending {
+		close(request.reply)
 	}
 	if terminal {
 		c.subsMu.Lock()
@@ -713,10 +731,10 @@ func (c *Client) closeWith(err error) {
 		}
 		c.pendingMu.Lock()
 		pending := c.pending
-		c.pending = make(map[uint64]chan protocol.ServerFrame)
+		c.pending = make(map[uint64]pendingRequest)
 		c.pendingMu.Unlock()
-		for _, ch := range pending {
-			close(ch)
+		for _, request := range pending {
+			close(request.reply)
 		}
 		c.subsMu.Lock()
 		for id, sub := range c.subs {
