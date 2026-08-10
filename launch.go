@@ -26,6 +26,12 @@ import (
 const instanceHomePrefix = "jcode-sdk-instance-"
 
 const (
+	defaultShutdownGracePeriod = 5 * time.Second
+	defaultShutdownReapTimeout = 5 * time.Second
+	defaultCleanupTimeout      = 30 * time.Second
+)
+
+const (
 	allowLegacyCodexAuthEnv    = "JCODE_ALLOW_CODEX_LEGACY_AUTH"
 	legacyCodexAuthSource      = ".codex/auth.json"
 	legacyCodexAuthDestination = "external/.codex/auth.json"
@@ -83,7 +89,13 @@ type LaunchOptions struct {
 	Env            map[string]string
 	StartupTimeout time.Duration
 	CleanupTimeout time.Duration
-	InheritStderr  bool
+	// ShutdownGracePeriod bounds cooperative SIGTERM shutdown before Linux
+	// private instances escalate to SIGKILL. Non-positive values use 5 seconds.
+	ShutdownGracePeriod time.Duration
+	// ShutdownReapTimeout bounds waiting for the single bridge Wait result after
+	// termination attempts. Non-positive values use 5 seconds.
+	ShutdownReapTimeout time.Duration
+	InheritStderr       bool
 	// ClientOptions controls the protocol client created by Launch.
 	ClientOptions Options
 	// Observer receives redacted startup lifecycle metadata. If set, it is also
@@ -97,7 +109,13 @@ func (o LaunchOptions) withDefaults() LaunchOptions {
 		o.StartupTimeout = 30 * time.Second
 	}
 	if o.CleanupTimeout <= 0 {
-		o.CleanupTimeout = 30 * time.Second
+		o.CleanupTimeout = defaultCleanupTimeout
+	}
+	if o.ShutdownGracePeriod <= 0 {
+		o.ShutdownGracePeriod = defaultShutdownGracePeriod
+	}
+	if o.ShutdownReapTimeout <= 0 {
+		o.ShutdownReapTimeout = defaultShutdownReapTimeout
 	}
 	return o
 }
@@ -115,15 +133,26 @@ type Instance interface {
 }
 
 type launchedInstance struct {
-	socketPath     string
-	jcodeHome      string
-	runtimeDir     string
-	ephemeral      bool
-	cleanupTimeout time.Duration
-	cmd            *exec.Cmd
-	waitDone       <-chan error
-	stopOnce       sync.Once
-	stopErr        error
+	socketPath            string
+	jcodeHome             string
+	runtimeDir            string
+	ownedPaths            []string
+	ephemeral             bool
+	cleanupTimeout        time.Duration
+	shutdownGracePeriod   time.Duration
+	shutdownReapTimeout   time.Duration
+	cmd                   *exec.Cmd
+	processGroupID        int
+	daemonPID             int
+	waitDone              <-chan error
+	shutdownMu            sync.Mutex
+	shutdownStarted       bool
+	shutdownFinished      bool
+	shutdownDone          chan struct{}
+	shutdownForceKill     chan struct{}
+	shutdownForceKillOnce sync.Once
+	shutdownContextErrs   []error
+	shutdownErr           error
 }
 
 func (i *launchedInstance) SocketPath() string { return i.socketPath }
@@ -131,18 +160,144 @@ func (i *launchedInstance) JcodeHome() string  { return i.jcodeHome }
 func (i *launchedInstance) Close() error       { return i.Shutdown() }
 
 func (i *launchedInstance) Shutdown() error {
-	i.stopOnce.Do(func() {
-		// The bridge is not the daemon. Stop the daemon first while its
-		// instance-scoped registry is still available.
-		stopInstanceDaemon(i.jcodeHome, i.runtimeDir)
-		if i.cmd != nil && i.cmd.Process != nil {
-			terminateProcess(i.cmd, i.waitDone)
+	return i.shutdown(context.Background())
+}
+
+// ShutdownInstance shuts down an Instance while allowing a caller context to
+// shorten the cooperative phase of SDK-owned Linux private instances. The
+// Instance interface remains unchanged so external implementations stay source
+// compatible. Cancellation never skips best-effort termination and cleanup.
+func ShutdownInstance(ctx context.Context, instance Instance) error {
+	if instance == nil {
+		return errors.New("nil instance")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if owned, ok := instance.(interface{ shutdown(context.Context) error }); ok {
+		return owned.shutdown(ctx)
+	}
+	err := instance.Shutdown()
+	if err == nil {
+		return nil
+	}
+	return errors.Join(context.Cause(ctx), err)
+}
+
+func (i *launchedInstance) shutdown(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	owner, done := i.beginShutdown(ctx)
+	if owner {
+		i.finishShutdown(i.runShutdown())
+	}
+	<-done
+	i.shutdownMu.Lock()
+	err := i.shutdownErr
+	i.shutdownMu.Unlock()
+	return err
+}
+
+func (i *launchedInstance) beginShutdown(ctx context.Context) (bool, <-chan struct{}) {
+	i.shutdownMu.Lock()
+	if i.shutdownDone == nil {
+		i.shutdownDone = make(chan struct{})
+		i.shutdownForceKill = make(chan struct{})
+	}
+	done := i.shutdownDone
+	if i.shutdownFinished {
+		i.shutdownMu.Unlock()
+		return false, done
+	}
+	owner := !i.shutdownStarted
+	i.shutdownStarted = true
+	i.shutdownMu.Unlock()
+
+	if cause := context.Cause(ctx); cause != nil {
+		i.requestShutdownEscalation(cause)
+	} else if ctx.Done() != nil {
+		go func() {
+			select {
+			case <-ctx.Done():
+				i.requestShutdownEscalation(context.Cause(ctx))
+			case <-done:
+			}
+		}()
+	}
+	return owner, done
+}
+
+func (i *launchedInstance) requestShutdownEscalation(cause error) {
+	if cause == nil {
+		return
+	}
+	i.shutdownMu.Lock()
+	if i.shutdownFinished {
+		i.shutdownMu.Unlock()
+		return
+	}
+	duplicate := false
+	for _, existing := range i.shutdownContextErrs {
+		if errors.Is(existing, cause) && errors.Is(cause, existing) {
+			duplicate = true
+			break
 		}
-		if i.ephemeral {
-			removeOwnedInstanceHome(i.jcodeHome, i.cleanupTimeout)
+	}
+	if !duplicate {
+		i.shutdownContextErrs = append(i.shutdownContextErrs, cause)
+	}
+	i.shutdownMu.Unlock()
+	i.shutdownForceKillOnce.Do(func() { close(i.shutdownForceKill) })
+}
+
+func (i *launchedInstance) runShutdown() error {
+	var errs []error
+	// The bridge is not necessarily the daemon. Resolve only the matching
+	// instance registry entry while it is still readable, then stop that PID.
+	if i.daemonPID <= 1 && i.jcodeHome != "" && i.runtimeDir != "" {
+		i.daemonPID = readDaemonPID(i.jcodeHome, i.runtimeDir)
+	}
+	if i.daemonPID > 1 {
+		if err := stopProcess(i.daemonPID); err != nil {
+			errs = append(errs, fmt.Errorf("stop private daemon: %w", err))
 		}
-	})
-	return i.stopErr
+	}
+
+	if i.cmd != nil || i.waitDone != nil || i.processGroupID != 0 {
+		_, err := terminateProcess(i.cmd, i.processGroupID, i.waitDone,
+			finiteDuration(i.shutdownGracePeriod, defaultShutdownGracePeriod),
+			finiteDuration(i.shutdownReapTimeout, defaultShutdownReapTimeout),
+			i.shutdownForceKill)
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if err := cleanupOwnedInstancePaths(i.jcodeHome, i.runtimeDir, i.ownedPaths,
+		i.ephemeral, i.cleanupTimeout); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
+}
+
+func (i *launchedInstance) finishShutdown(phaseErr error) {
+	i.shutdownMu.Lock()
+	errs := make([]error, 0, len(i.shutdownContextErrs)+1)
+	if phaseErr != nil {
+		errs = append(errs, phaseErr)
+		errs = append(errs, i.shutdownContextErrs...)
+	}
+	i.shutdownErr = errors.Join(errs...)
+	i.shutdownFinished = true
+	close(i.shutdownDone)
+	i.shutdownMu.Unlock()
+}
+
+func finiteDuration(value, fallback time.Duration) time.Duration {
+	if value <= 0 {
+		return fallback
+	}
+	return value
 }
 
 // Launch starts a private bridge and connects a Client to it. Any failure
@@ -215,9 +370,17 @@ func launchInstanceWithObserver(options LaunchOptions, observer Observer) (Insta
 			return nil, &LaunchError{Code: LaunchStartupFailed, Err: err}
 		}
 	}
+	absoluteHome, err := filepath.Abs(home)
+	if err != nil {
+		if ephemeral {
+			_ = removeOwnedInstanceHome(home, defaultCleanupTimeout)
+		}
+		return nil, &LaunchError{Code: LaunchStartupFailed, Err: fmt.Errorf("resolve instance home: %w", err)}
+	}
+	home = absoluteHome
 	cleanupOnError := func() {
 		if ephemeral {
-			removeOwnedInstanceHome(home, 0)
+			_ = removeOwnedInstanceHome(home, defaultCleanupTimeout)
 		}
 	}
 	if err := ensurePrivateDirectory(home); err != nil {
@@ -225,13 +388,16 @@ func launchInstanceWithObserver(options LaunchOptions, observer Observer) (Insta
 		return nil, &LaunchError{Code: LaunchStartupFailed, Err: err}
 	}
 	runtimeDir := filepath.Join(home, "run")
-	if err := os.MkdirAll(runtimeDir, 0o700); err != nil {
+	if err := ensurePrivateDirectory(runtimeDir); err != nil {
 		cleanupOnError()
-		return nil, &LaunchError{Code: LaunchStartupFailed, Err: err}
+		return nil, &LaunchError{Code: LaunchStartupFailed, Err: fmt.Errorf("prepare instance runtime directory: %w", err)}
 	}
-	_ = os.Chmod(runtimeDir, 0o700)
-	for _, name := range []string{"jcode-api.sock", "jcode.sock", "jcode-debug.sock", "jcode.sock.hash"} {
-		_ = os.Remove(filepath.Join(runtimeDir, name))
+	ownedPaths := instanceOwnedRuntimePaths(runtimeDir)
+	cleanupOnError = func() {
+		_ = cleanupOwnedInstancePaths(home, runtimeDir, ownedPaths, ephemeral, o.CleanupTimeout)
+	}
+	for _, path := range ownedPaths {
+		_ = os.Remove(path)
 	}
 	if o.inheritLogins() {
 		var err error
@@ -262,7 +428,8 @@ func launchInstanceWithObserver(options LaunchOptions, observer Observer) (Insta
 			return nil, &LaunchError{Code: LaunchStartupFailed, Binary: binary, Err: err}
 		}
 	}
-	if err := startProcess(cmd); err != nil {
+	processGroupID, err := startProcess(cmd)
+	if err != nil {
 		cleanupOnError()
 		code := LaunchStartupFailed
 		if errors.Is(err, os.ErrNotExist) {
@@ -285,11 +452,14 @@ func launchInstanceWithObserver(options LaunchOptions, observer Observer) (Insta
 		if socketAccepts(socketPath) {
 			emitLaunchObservation(observer, Observation{Kind: "launch_socket_ready"})
 			return &launchedInstance{socketPath: socketPath, jcodeHome: home, runtimeDir: runtimeDir,
-				ephemeral: ephemeral, cleanupTimeout: o.CleanupTimeout, cmd: cmd, waitDone: waitDone}, nil
+				ownedPaths: ownedPaths, ephemeral: ephemeral, cleanupTimeout: o.CleanupTimeout,
+				shutdownGracePeriod: o.ShutdownGracePeriod, shutdownReapTimeout: o.ShutdownReapTimeout,
+				cmd: cmd, processGroupID: processGroupID, daemonPID: readDaemonPID(home, runtimeDir),
+				waitDone: waitDone}, nil
 		}
 		select {
 		case waitErr := <-waitDone:
-			stderrText := <-stderrDone
+			stderrText := collectStderr(stderr, stderrDone, o.ShutdownReapTimeout)
 			cleanupOnError()
 			emitLaunchObservation(observer, Observation{Kind: "launch_process_error", Error: string(LaunchStartupFailed)})
 			return nil, &LaunchError{Code: LaunchStartupFailed, Binary: binary, Stderr: redactSecrets(stderrText, o.Env), Err: waitErr}
@@ -297,12 +467,13 @@ func launchInstanceWithObserver(options LaunchOptions, observer Observer) (Insta
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	terminateProcess(cmd, waitDone)
-	stderrText := <-stderrDone
+	_, terminationErr := terminateProcess(cmd, processGroupID, waitDone,
+		o.ShutdownGracePeriod, o.ShutdownReapTimeout, nil)
+	stderrText := collectStderr(stderr, stderrDone, o.ShutdownReapTimeout)
 	cleanupOnError()
 	emitLaunchObservation(observer, Observation{Kind: "launch_socket_timeout", Error: string(LaunchStartupTimeout)})
 	return nil, &LaunchError{Code: LaunchStartupTimeout, Binary: binary, Stderr: redactSecrets(stderrText, o.Env),
-		Err: fmt.Errorf("no API socket at %s within %s", socketPath, o.StartupTimeout)}
+		Err: errors.Join(fmt.Errorf("no API socket at %s within %s", socketPath, o.StartupTimeout), terminationErr)}
 }
 
 func launchArgs(options LaunchOptions, socketPath string) []string {
@@ -398,6 +569,25 @@ func readTail(reader io.Reader, limit int) string {
 		data = data[len(data)-limit:]
 	}
 	return strings.TrimSpace(string(data))
+}
+
+func collectStderr(stderr io.Closer, stderrDone <-chan string, timeout time.Duration) string {
+	timer := time.NewTimer(finiteDuration(timeout, defaultShutdownReapTimeout))
+	defer timer.Stop()
+	select {
+	case text := <-stderrDone:
+		return text
+	case <-timer.C:
+		if stderr != nil {
+			_ = stderr.Close()
+		}
+		select {
+		case text := <-stderrDone:
+			return text
+		default:
+			return ""
+		}
+	}
 }
 
 func ensurePrivateDirectory(path string) error {
@@ -533,7 +723,26 @@ func userJcodeHome() string {
 }
 
 func readDaemonPID(home, runtimeDir string) int {
-	data, err := os.ReadFile(filepath.Join(home, "servers.json"))
+	if home == "" || runtimeDir == "" {
+		return 0
+	}
+	home = filepath.Clean(home)
+	runtimeDir = filepath.Clean(runtimeDir)
+	if runtimeDir != filepath.Join(home, "run") {
+		return 0
+	}
+	for _, directory := range []string{home, runtimeDir} {
+		info, err := os.Lstat(directory)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return 0
+		}
+	}
+	registryPath := filepath.Join(home, "servers.json")
+	info, err := os.Lstat(registryPath)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return 0
+	}
+	data, err := os.ReadFile(registryPath)
 	if err != nil {
 		return 0
 	}
@@ -544,39 +753,182 @@ func readDaemonPID(home, runtimeDir string) int {
 	if json.Unmarshal(data, &entries) != nil {
 		return 0
 	}
-	wanted := filepath.Join(runtimeDir, "jcode.sock")
+	wanted := filepath.Clean(filepath.Join(runtimeDir, "jcode.sock"))
 	for _, entry := range entries {
-		if entry.Socket == wanted && entry.PID > 1 {
+		if filepath.Clean(entry.Socket) == wanted && entry.PID > 1 {
 			return entry.PID
 		}
 	}
 	return 0
 }
 
-func stopInstanceDaemon(home, runtimeDir string) {
-	if pid := readDaemonPID(home, runtimeDir); pid > 1 {
-		stopProcess(pid)
+func instanceOwnedRuntimePaths(runtimeDir string) []string {
+	return []string{
+		filepath.Join(runtimeDir, "jcode-api.sock"),
+		filepath.Join(runtimeDir, "jcode.sock"),
+		filepath.Join(runtimeDir, "jcode-debug.sock"),
+		filepath.Join(runtimeDir, "jcode.sock.hash"),
 	}
 }
 
-func removeOwnedInstanceHome(home string, timeout time.Duration) {
+func cleanupOwnedInstancePaths(home, runtimeDir string, ownedPaths []string, ephemeral bool, timeout time.Duration) error {
+	timeout = finiteDuration(timeout, defaultCleanupTimeout)
+	deadline := time.Now().Add(timeout)
+	var errs []error
+	if err := removeOwnedRuntimePaths(home, runtimeDir, ownedPaths, remainingCleanupDuration(deadline)); err != nil {
+		errs = append(errs, err)
+	}
+	if ephemeral {
+		if err := removeOwnedInstanceHome(home, remainingCleanupDuration(deadline)); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func remainingCleanupDuration(deadline time.Time) time.Duration {
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return time.Nanosecond
+	}
+	return remaining
+}
+
+func removeOwnedRuntimePaths(home, runtimeDir string, ownedPaths []string, timeout time.Duration) error {
+	if home == "" && runtimeDir == "" && len(ownedPaths) == 0 {
+		return nil
+	}
+	home = filepath.Clean(home)
+	runtimeDir = filepath.Clean(runtimeDir)
+	if runtimeDir != filepath.Join(home, "run") {
+		return fmt.Errorf("owned runtime directory is outside the recorded home")
+	}
+	allowed := make(map[string]struct{}, 4)
+	for _, path := range instanceOwnedRuntimePaths(runtimeDir) {
+		allowed[filepath.Clean(path)] = struct{}{}
+	}
+	for _, path := range ownedPaths {
+		clean := filepath.Clean(path)
+		if filepath.Dir(clean) != runtimeDir {
+			return fmt.Errorf("owned runtime path is outside the recorded runtime directory")
+		}
+		if _, ok := allowed[clean]; !ok {
+			return fmt.Errorf("owned runtime path is not an expected private runtime file")
+		}
+	}
+	if info, err := os.Lstat(home); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("inspect owned home: %w", err)
+	} else if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("owned home is not a real directory")
+	}
+	if info, err := os.Lstat(runtimeDir); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("inspect owned runtime directory: %w", err)
+	} else if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("owned runtime directory is not a real directory")
+	}
+
+	timeout = finiteDuration(timeout, defaultCleanupTimeout)
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		var permanent bool
+		lastErr, permanent = removeOwnedRuntimePathsOnce(runtimeDir, ownedPaths)
+		if lastErr == nil {
+			return nil
+		}
+		if permanent {
+			return fmt.Errorf("clean owned runtime paths: %w", lastErr)
+		}
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("clean owned runtime paths: %w", lastErr)
+		}
+		delay := min(50*time.Millisecond, time.Until(deadline))
+		if delay > 0 {
+			time.Sleep(delay)
+		}
+	}
+}
+
+func removeOwnedRuntimePathsOnce(runtimeDir string, ownedPaths []string) (error, bool) {
+	var errs []error
+	permanent := false
+	for _, path := range ownedPaths {
+		info, err := os.Lstat(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("inspect owned runtime file: %w", err))
+			permanent = true
+			continue
+		}
+		if info.Mode()&os.ModeSymlink != 0 || info.IsDir() ||
+			(!info.Mode().IsRegular() && info.Mode()&os.ModeSocket == 0) {
+			errs = append(errs, errors.New("owned runtime file has an unsafe type"))
+			permanent = true
+			continue
+		}
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, fmt.Errorf("remove owned runtime file: %w", err))
+		}
+	}
+	if len(errs) != 0 {
+		return errors.Join(errs...), permanent
+	}
+	entries, err := os.ReadDir(runtimeDir)
+	if os.IsNotExist(err) {
+		return nil, false
+	}
+	if err != nil {
+		return fmt.Errorf("inspect owned runtime directory contents: %w", err), false
+	}
+	if len(entries) != 0 {
+		return nil, false
+	}
+	if err := os.Remove(runtimeDir); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove empty owned runtime directory: %w", err), false
+	}
+	return nil, false
+}
+
+func removeOwnedInstanceHome(home string, timeout time.Duration) error {
 	clean := filepath.Clean(home)
 	parent := filepath.Clean(filepath.Dir(clean))
 	if parent != filepath.Clean(os.TempDir()) || !strings.HasPrefix(filepath.Base(clean), instanceHomePrefix) {
-		return
+		return errors.New("ephemeral instance home is outside the SDK ownership boundary")
 	}
-	if info, err := os.Lstat(clean); err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return
+	if info, err := os.Lstat(clean); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("inspect ephemeral instance home: %w", err)
+	} else if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return errors.New("ephemeral instance home is not a real directory")
 	}
+	timeout = finiteDuration(timeout, defaultCleanupTimeout)
 	deadline := time.Now().Add(timeout)
+	var lastErr error
 	for {
-		_ = os.RemoveAll(clean)
-		if _, err := os.Lstat(clean); os.IsNotExist(err) {
-			return
+		lastErr = os.RemoveAll(clean)
+		_, statErr := os.Lstat(clean)
+		if os.IsNotExist(statErr) {
+			return nil
 		}
-		if timeout <= 0 || time.Now().After(deadline) {
-			return
+		if statErr != nil {
+			return errors.Join(lastErr, fmt.Errorf("inspect ephemeral instance home after removal: %w", statErr))
 		}
-		time.Sleep(50 * time.Millisecond)
+		if !time.Now().Before(deadline) {
+			if lastErr == nil {
+				lastErr = errors.New("ephemeral instance home still exists")
+			}
+			return fmt.Errorf("remove ephemeral instance home: %w", lastErr)
+		}
+		delay := min(50*time.Millisecond, time.Until(deadline))
+		if delay > 0 {
+			time.Sleep(delay)
+		}
 	}
 }
