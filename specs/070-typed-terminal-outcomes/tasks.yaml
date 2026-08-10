@@ -446,7 +446,7 @@ phases:
         file_path: "turn.go"
         dependencies: ["T028", "T029"]
         acceptance_criteria:
-          - "Run gofmt -w on turn.go, session.go, client.go, launch.go, turn_test.go, client_test.go, client_validation_test.go, launch_test.go, and ownership_test.go."
+          - "Run gofmt -w on turn.go, session.go, client.go, launch.go, turn_test.go, turn_outcome_test.go, client_test.go, client_validation_test.go, launch_test.go, and ownership_test.go."
           - "Run gofmt -d on the same explicit file list and confirm it produces no diff."
           - "Do not format, rewrite, or stage unrelated files."
 
@@ -522,7 +522,7 @@ phases:
         file_path: "turn.go"
         dependencies: ["T035"]
         acceptance_criteria:
-          - "For the later implementation run only, stage explicit changed files: turn.go, session.go, client.go, launch.go, turn_test.go, client_test.go, client_validation_test.go, launch_test.go, ownership_test.go, README.md, and docs/architecture.md."
+          - "For the later implementation run only, stage explicit changed files: turn.go, session.go, client.go, launch.go, turn_test.go, turn_outcome_test.go, client_test.go, client_validation_test.go, launch_test.go, ownership_test.go, README.md, and docs/architecture.md."
           - "Do not use git add ., git add -A, stash, reset, rebase, amend, squash, force-push, or stage the planning artifact implicitly."
           - "Create one scoped commit with a message such as feat: add typed terminal outcomes only after all prior validation passes."
           - "Do not execute this task during the current planning-artifact generation run."

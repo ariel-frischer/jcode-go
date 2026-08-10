@@ -128,9 +128,15 @@ turn, err := session.StartTurn(lifecycleCtx, prompt, jcode.SendOptions{})
 if err != nil { return err }
 if err := turn.Accepted(waitCtx); err != nil { return err }
 
+var cancelErr error
 for {
     event, err := turn.Next(waitCtx)
     if err != nil {
+        if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+            cancelCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+            cancelErr = turn.Cancel(cancelCtx)
+            cancel()
+        }
         break
     }
     if text, ok := event.(*jcode.TextDelta); ok {
@@ -138,8 +144,10 @@ for {
     }
 }
 
-result, err := turn.Wait(waitCtx)
-if err != nil { return err } // only this Wait was interrupted
+terminalWaitCtx, cancelTerminalWait := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancelTerminalWait()
+result, err := turn.Wait(terminalWaitCtx)
+if err != nil { return errors.Join(cancelErr, err) } // only this fresh Wait was interrupted
 switch result.Kind {
 case jcode.TurnResultCompleted:
     return nil
@@ -150,6 +158,8 @@ default:
 }
 ```
 
+When the event wait is interrupted, the example explicitly requests server-side
+cancellation and then waits for the terminal outcome with a fresh bounded context.
 The lifecycle context passed to `StartTurn` owns the turn. Canceling it records
 `TurnResultLifecycleCanceled` or `TurnResultLifecycleDeadlineExceeded` and does
 not send protocol `cancel`. Contexts passed to `Accepted`, `Next`, `Cancel`, and

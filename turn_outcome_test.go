@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -360,6 +361,7 @@ func TestDetachedBridgeExitDoesNotTerminateTurn(t *testing.T) {
 
 	instance := &bridgeExitInstance{exited: make(chan struct{})}
 	client.setInstance(instance)
+	monitorDone := client.bridgeMonitor.done
 	finish := make(chan struct{})
 	go func() {
 		_, _ = receiveTurnRequest(server)
@@ -374,6 +376,11 @@ func TestDetachedBridgeExitDoesNotTerminateTurn(t *testing.T) {
 	if !ok || detached != instance {
 		t.Fatalf("DetachInstance = (%v, %v), want attached instance", detached, ok)
 	}
+	select {
+	case <-monitorDone:
+	case <-time.After(time.Second):
+		t.Fatal("detached bridge monitor did not exit promptly")
+	}
 	close(instance.exited)
 	shortCtx, stop := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer stop()
@@ -386,5 +393,107 @@ func TestDetachedBridgeExitDoesNotTerminateTurn(t *testing.T) {
 	result, err := turn.Wait(ctx)
 	if err != nil || result.Kind != TurnResultCompleted || result.Err != nil {
 		t.Fatalf("Wait = %+v, %v, want completion", result, err)
+	}
+}
+
+func TestReplacedBridgeExitMonitorDoesNotTerminateTurn(t *testing.T) {
+	client, server := newTurnTestClient(t, Options{})
+	defer client.Close()
+	defer server.Close()
+
+	oldInstance := &bridgeExitInstance{exited: make(chan struct{})}
+	replacement := &bridgeExitInstance{exited: make(chan struct{})}
+	client.setInstance(oldInstance)
+	oldMonitorDone := client.bridgeMonitor.done
+	finish := make(chan struct{})
+	go func() {
+		_, _ = receiveTurnRequest(server)
+		<-finish
+		_ = server.Send(mustEventFrame(t, "turn_done", map[string]any{"session_id": "session_turn"}))
+	}()
+	turn, err := (Session{client: client, ID: "session_turn"}).StartTurn(context.Background(), "prompt", SendOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	client.setInstance(replacement)
+	select {
+	case <-oldMonitorDone:
+	case <-time.After(time.Second):
+		t.Fatal("replaced bridge monitor did not exit promptly")
+	}
+	close(oldInstance.exited)
+	shortCtx, stop := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	if result, waitErr := turn.Wait(shortCtx); !errors.Is(waitErr, context.DeadlineExceeded) || result != (TurnResult{}) {
+		stop()
+		t.Fatalf("replaced bridge exit terminated turn: %+v, %v", result, waitErr)
+	}
+	stop()
+
+	close(finish)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	result, err := turn.Wait(ctx)
+	if err != nil || result.Kind != TurnResultCompleted || result.Err != nil {
+		t.Fatalf("Wait = %+v, %v, want completion", result, err)
+	}
+}
+
+func TestBridgeExitFailureSerializesWithDetach(t *testing.T) {
+	client, server := newTurnTestClient(t, Options{})
+	defer client.Close()
+	defer server.Close()
+
+	instance := &bridgeExitInstance{exited: make(chan struct{})}
+	client.setInstance(instance)
+	go func() { _, _ = receiveTurnRequest(server) }()
+	turn, err := (Session{client: client, ID: "session_turn"}).StartTurn(context.Background(), "prompt", SendOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	client.subsMu.Lock()
+	subsLocked := true
+	defer func() {
+		if subsLocked {
+			client.subsMu.Unlock()
+		}
+	}()
+	close(instance.exited)
+	deadline := time.Now().Add(time.Second)
+	for {
+		if !client.stateMu.TryLock() {
+			break
+		}
+		client.stateMu.Unlock()
+		if time.Now().After(deadline) {
+			t.Fatal("bridge monitor did not retain the client state lock while failing turn subscribers")
+		}
+		runtime.Gosched()
+	}
+
+	detached := make(chan struct{})
+	go func() {
+		_, _ = client.DetachInstance()
+		close(detached)
+	}()
+	select {
+	case <-detached:
+		t.Fatal("DetachInstance completed while bridge failure was validating the attachment")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	client.subsMu.Unlock()
+	subsLocked = false
+	select {
+	case <-detached:
+	case <-time.After(time.Second):
+		t.Fatal("DetachInstance did not finish after bridge failure completed")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	result, err := turn.Wait(ctx)
+	if err != nil || result.Kind != TurnResultBridgeExited || !errors.Is(result.Err, ErrBridgeExited) {
+		t.Fatalf("Wait = %+v, %v, want serialized bridge exit", result, err)
 	}
 }

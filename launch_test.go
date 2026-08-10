@@ -58,6 +58,27 @@ func TestWaitForCommandExitFansOutWithoutConsumingShutdownResult(t *testing.T) {
 	}
 }
 
+func TestWaitForCommandExitPreservesNonzeroExitError(t *testing.T) {
+	cmd := exec.Command("sh", "-c", "exit 1")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitDone, bridgeDone := waitForCommandExit(cmd)
+	select {
+	case <-bridgeDone:
+	case <-time.After(time.Second):
+		t.Fatal("bridge exit signal was not closed for nonzero exit")
+	}
+	select {
+	case err := <-waitDone:
+		if err == nil {
+			t.Fatal("process wait error = nil, want nonzero exit error")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("nonzero shutdown wait result was not delivered")
+	}
+}
+
 func TestLaunchEnvironmentExplicitAPIKeyReplacesAmbientValue(t *testing.T) {
 	t.Setenv("OPENROUTER_API_KEY", "ambient-key")
 	env := launchEnvironment("/private/home", "/private/run", "/private/run/api.sock", map[string]string{
