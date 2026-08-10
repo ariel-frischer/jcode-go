@@ -1,0 +1,242 @@
+tasks:
+  branch: "agent/jcode-go-70h-3"
+  created: "2026-08-10"
+  spec_path: "specs/001-linux-private-shutdown/spec.yaml"
+  plan_path: "specs/001-linux-private-shutdown/plan.yaml"
+
+summary:
+  total_tasks: 12
+  total_phases: 5
+  parallel_opportunities: 2
+  estimated_complexity: "high"
+
+phases:
+  - number: 1
+    title: "Autospec and baseline"
+    purpose: "Establish reviewed artifacts, exact execution boundaries, and a clean baseline."
+    tasks:
+      - id: "T001"
+        title: "Validate reviewed Autospec artifacts"
+        status: "Completed"
+        type: "documentation"
+        parallel: false
+        story_id: null
+        file_path: "specs/001-linux-private-shutdown/"
+        dependencies: []
+        acceptance_criteria:
+          - "spec.yaml, plan.yaml, and tasks.yaml pass autospec artifact validation."
+          - "execution.md records the exact oauth-cheap native SDK incompatibility and direct-stage exception."
+      - id: "T002"
+        title: "Run focused pre-change baseline tests"
+        status: "Completed"
+        type: "test"
+        parallel: true
+        story_id: null
+        file_path: "launch_test.go, ownership_test.go"
+        dependencies: ["T001"]
+        acceptance_criteria:
+          - "Existing focused launch and ownership tests pass before implementation."
+
+  - number: 2
+    title: "User Story 1 - Bounded private instance shutdown"
+    purpose: "Create and supervise one owned process group with finite TERM, KILL, and reap behavior."
+    story_reference: "US-001"
+    independent_test: "Run controlled Linux child groups that cooperate with or ignore TERM and assert bounded complete removal."
+    tasks:
+      - id: "T003"
+        title: "Add Linux process-group and bounded reap tests"
+        status: "Completed"
+        type: "test"
+        parallel: false
+        story_id: "US-001"
+        file_path: "process_unix_test.go"
+        dependencies: ["T002"]
+        acceptance_criteria:
+          - "Tests cover a new bridge process group, cooperative TERM, TERM-ignoring descendant KILL, and a non-delivering waitDone bound."
+          - "Tests assert no owned PID remains and no signal path uses group IDs zero or one."
+      - id: "T004"
+        title: "Add finite shutdown configuration and context helper"
+        status: "Completed"
+        type: "implementation"
+        parallel: false
+        story_id: "US-001"
+        file_path: "launch.go"
+        dependencies: ["T003"]
+        acceptance_criteria:
+          - "LaunchOptions has finite default TERM grace and reap durations."
+          - "ShutdownInstance(ctx, instance) is additive and the Instance interface is unchanged."
+          - "launchedInstance stores one shared shutdown result and the initiating context can only shorten grace."
+      - id: "T005"
+        title: "Implement owned Unix process group signaling and bounded single reap"
+        status: "Completed"
+        type: "implementation"
+        parallel: false
+        story_id: "US-001"
+        file_path: "process_unix.go"
+        dependencies: ["T004"]
+        acceptance_criteria:
+          - "Setpgid is configured before Start and only a recorded group ID greater than one is signaled."
+          - "TERM is followed by finite grace, conditional KILL, and finite consumption of the existing waitDone channel."
+          - "ESRCH is successful and other errors are wrapped with operation context."
+
+  - number: 3
+    title: "User Story 2 - Safe owned resource cleanup"
+    purpose: "Stop the matched private daemon and remove exactly the instance-owned runtime and ephemeral home."
+    story_reference: "US-002"
+    independent_test: "Use temporary recorded homes and runtime paths to prove owned removal and caller-owned retention."
+    tasks:
+      - id: "T006"
+        title: "Add owned daemon and filesystem cleanup tests"
+        status: "Completed"
+        type: "test"
+        parallel: true
+        story_id: "US-002"
+        file_path: "process_unix_test.go"
+        dependencies: ["T002"]
+        acceptance_criteria:
+          - "Tests cover registry socket matching and invalid daemon PIDs."
+          - "Tests prove socket, runtime, and ephemeral home removal while retaining caller-owned homes and unrelated paths."
+          - "Tests reject symlinked or outside-home runtime roots."
+      - id: "T007"
+        title: "Implement instance-scoped daemon stop and recorded path cleanup"
+        status: "Completed"
+        type: "implementation"
+        parallel: false
+        story_id: "US-002"
+        file_path: "launch.go"
+        dependencies: ["T005", "T006"]
+        acceptance_criteria:
+          - "Daemon signaling uses only a PID read from the private registry entry matching the recorded runtime socket."
+          - "Cleanup validates recorded containment and real directory roots before removal."
+          - "Persistent homes retain durable state and ephemeral SDK homes are removed after termination attempts."
+          - "Errors from safe cleanup phases are joined rather than suppressing later cleanup."
+
+  - number: 4
+    title: "User Story 3 - Atomic shared ownership"
+    purpose: "Ensure close, detach, and every shutdown entry point agree on one owner and result."
+    story_reference: "US-003"
+    independent_test: "Run deterministic close-first and detach-first orderings plus concurrent repeated instance shutdown."
+    tasks:
+      - id: "T008"
+        title: "Add concurrent shared-result and close-detach ownership tests"
+        status: "Completed"
+        type: "test"
+        parallel: false
+        story_id: "US-003"
+        file_path: "ownership_test.go, process_unix_test.go"
+        dependencies: ["T003", "T006"]
+        acceptance_criteria:
+          - "Concurrent Shutdown, Close, and ShutdownInstance execute one cleanup and return the stored result."
+          - "Close-first makes DetachInstance fail and detach-first keeps client closure transport-only."
+      - id: "T009"
+        title: "Atomically claim attached instance when Client.Close begins"
+        status: "Completed"
+        type: "implementation"
+        parallel: false
+        story_id: "US-003"
+        file_path: "client.go"
+        dependencies: ["T008"]
+        acceptance_criteria:
+          - "StateClosing and instance claim/clear occur under stateMu before close releases ownership synchronization."
+          - "DetachInstance rejects transfer in StateClosing and StateClosed."
+          - "Instance shutdown runs outside stateMu and existing Client.Close return compatibility is preserved."
+      - id: "T010"
+        title: "Complete shared shutdown result wiring"
+        status: "Completed"
+        type: "implementation"
+        parallel: false
+        story_id: "US-003"
+        file_path: "launch.go"
+        dependencies: ["T007", "T009"]
+        acceptance_criteria:
+          - "All launchedInstance shutdown entry points converge on one guarded owner and shared completion channel."
+          - "Repeated callers return the exact stored joined result after cleanup completes."
+
+  - number: 5
+    title: "Polish and validation"
+    purpose: "Prove scope, formatting, race safety, and repository-wide compatibility before commit."
+    tasks:
+      - id: "T011"
+        title: "Run focused and full validation"
+        status: "Completed"
+        type: "test"
+        parallel: false
+        story_id: null
+        file_path: "./..."
+        dependencies: ["T010"]
+        acceptance_criteria:
+          - "Focused supervision and ownership tests pass."
+          - "go test ./... -count=1 passes."
+          - "go test -race ./... -count=1 passes if it completes within a bounded run."
+          - "git diff --check passes."
+      - id: "T012"
+        title: "Review scope and commit explicit Bead files"
+        status: "Completed"
+        type: "documentation"
+        parallel: false
+        story_id: null
+        file_path: "launch.go, process_unix.go, client.go, focused tests, specs/001-linux-private-shutdown/"
+        dependencies: ["T011"]
+        acceptance_criteria:
+          - "Diff contains no Windows parity, turn lifecycle, retry, provider, or unrelated changes."
+          - "Only explicit scoped files are staged and committed with a focused message."
+          - "The branch is clean after commit and is not pushed or merged."
+
+dependencies:
+  user_story_order:
+    - story_id: "US-001"
+      depends_on: []
+      blocks: ["US-002", "US-003"]
+    - story_id: "US-002"
+      depends_on: ["US-001"]
+      blocks: ["US-003"]
+    - story_id: "US-003"
+      depends_on: ["US-001", "US-002"]
+      blocks: []
+  phase_order:
+    - phase: 1
+      blocks: [2, 3]
+    - phase: 2
+      blocks: [3, 4]
+    - phase: 3
+      blocks: [4]
+    - phase: 4
+      blocks: [5]
+    - phase: 5
+      blocks: []
+
+parallel_execution:
+  - phase: 1
+    parallel_groups:
+      - tasks: ["T002"]
+        rationale: "The baseline test can run after artifact validation without modifying files."
+  - phase: 2
+    parallel_groups:
+      - tasks: ["T003", "T006"]
+        rationale: "Process behavior and path ownership fixtures are logically independent sections of the Linux test file and can be designed independently, though this worker executes them serially."
+
+implementation_strategy:
+  mvp_scope:
+    phases: [1, 2, 3, 4]
+    description: "All three P0 stories are required because bounded process termination, safe cleanup, and sole ownership form one shutdown contract."
+    validation: "Focused Linux tests and ownership race tests pass before repository-wide validation."
+  incremental_delivery:
+    - milestone: "Supervision behavior encoded"
+      phases: [1, 2]
+      deliverable: "Controlled process-group tests and bounded TERM/KILL/reap implementation."
+    - milestone: "Owned cleanup complete"
+      phases: [1, 2, 3]
+      deliverable: "Daemon and filesystem ownership cleanup with caller-home retention."
+    - milestone: "Lifecycle contract complete"
+      phases: [1, 2, 3, 4]
+      deliverable: "Shared idempotent result and atomic Client.Close versus DetachInstance ownership."
+    - milestone: "Handoff ready"
+      phases: [1, 2, 3, 4, 5]
+      deliverable: "Validated, committed, clean worker branch."
+
+_meta:
+  version: "1.0.0"
+  generator: "autospec"
+  generator_version: "dev-fbcd884"
+  created: "2026-08-10T18:23:46Z"
+  artifact_type: "tasks"

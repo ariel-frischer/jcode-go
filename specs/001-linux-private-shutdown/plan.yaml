@@ -1,0 +1,206 @@
+plan:
+  branch: "agent/jcode-go-70h-3"
+  created: "2026-08-10"
+  spec_path: "specs/001-linux-private-shutdown/spec.yaml"
+
+summary: |
+  Extend the existing private-instance launcher rather than introducing a generic lifecycle framework. Launch will request a new Unix process group before exec.Start, record the bridge PID as the owned process-group ID, create exactly one cmd.Wait goroutine, and construct a launchedInstance containing finite shutdown configuration and exact owned paths.
+
+  The first shutdown caller becomes the guarded shutdown owner and performs one sequence shared by Instance.Shutdown, Instance.Close, ShutdownInstance, and client-owned shutdown. Concurrent callers wait on the same completion channel and may shorten the graceful phase through their contexts, but cannot run duplicate cleanup. The owner stops only the daemon matched by the private registry socket, signals the recorded process group with TERM, escalates to KILL when required, bounds consumption of the single wait result, and then cleans validated recorded runtime paths and an SDK-created ephemeral home. Client close atomically claims and clears its attached instance under the existing state mutex so DetachInstance cannot transfer ownership after closing begins.
+
+technical_context:
+  language: "Go 1.23"
+  framework: "Standard library"
+  primary_dependencies:
+    - name: "os/exec"
+      version: "Go 1.23 standard library"
+      purpose: "Start the private bridge and perform the single process reap."
+    - name: "syscall"
+      version: "Go 1.23 Linux standard library"
+      purpose: "Create and signal the owned process group with SIGTERM and SIGKILL."
+    - name: "context"
+      version: "Go 1.23 standard library"
+      purpose: "Allow the additive shutdown helper to shorten TERM grace without skipping mandatory cleanup."
+  storage: "Instance-owned filesystem paths beneath a private JCODE_HOME"
+  testing:
+    framework: "testing package"
+    approach: "Focused Linux controlled-child integration tests, deterministic ownership/concurrency tests, full package suite, and race-enabled full suite."
+  target_platform: "Linux"
+  project_type: "library"
+  performance_goals: "Default shutdown uses at most 5 seconds TERM grace, 5 seconds bounded reap, and the configured cleanup cap; tests use reduced deterministic bounds."
+  constraints:
+    - "Preserve protocol v1 raw APIs and existing exported shutdown and ownership method signatures."
+    - "Do not add methods to the exported Instance interface."
+    - "Never signal PID 0, PID 1, or an unrecorded process group."
+    - "Never remove a path outside the instance's recorded private home and ownership set."
+    - "Caller context cancellation may shorten grace but cannot skip KILL, bounded reap, or path cleanup."
+    - "Do not implement Windows supervision parity or modify turn lifecycle behavior."
+  scale_scope: "One private bridge process group and one private runtime directory per launched SDK instance."
+
+constitution_check:
+  constitution_path: "Not found"
+  gates:
+    - name: "Repository architecture contract"
+      status: "PASS"
+      notes: "docs/architecture.md was read first and assigns launch.go, process_unix.go, supervision tests, additive context shutdown, and Client ownership serialization to jcode-go-70h.3."
+    - name: "SDK stability plan"
+      status: "PASS"
+      notes: "The plan is Linux-only, preserves public compatibility, uses explicit caller WorkingDir unchanged, and avoids live provider work."
+    - name: "Worker boundary"
+      status: "PASS"
+      notes: "Work remains in agent/jcode-go-70h-3; no Bead mutation, push, merge, provider change, delegation, or worktree creation is planned."
+    - name: "Autospec policy"
+      status: "PASS"
+      notes: "The oauth-cheap profile was inspected. Its native jcode connect runner conflicts with the approved direct-worker boundary, so stage artifacts are generated and validated directly in the already-running Jcode process as the user-authorized exception."
+
+research_findings:
+  decisions:
+    - topic: "Process ownership and signaling"
+      decision: "Set SysProcAttr.Setpgid before Start, record cmd.Process.Pid as the owned group ID, and signal only negative recorded IDs greater than one."
+      rationale: "This reaches descendants without system discovery and satisfies the architecture's sole ownership boundary."
+      alternatives_considered:
+        - "Signal only the bridge PID, which can leave descendants orphaned."
+        - "Scan process names or the system process table, which is explicitly forbidden."
+    - topic: "Single bounded reap"
+      decision: "Keep one buffered waitDone channel fed by exactly one cmd.Wait goroutine and consume it through grace/reap selects without calling Wait elsewhere."
+      rationale: "The channel preserves the current structure while making every receive finite and naturally sharing one reap across callers."
+      alternatives_considered:
+        - "Call cmd.Wait from each shutdown entry point, which is invalid and race-prone."
+        - "Wait indefinitely after Kill, which violates the bounded contract."
+    - topic: "Context-aware compatibility"
+      decision: "Add ShutdownInstance(ctx, instance) and use an unexported context-shutdown capability implemented by launchedInstance; foreign Instance implementations retain the existing Shutdown call path."
+      rationale: "This adds context behavior for SDK-owned instances without breaking external implementations of the exported interface."
+      alternatives_considered:
+        - "Add ShutdownContext to Instance, which is a breaking interface change."
+        - "Make existing Shutdown accept context, which breaks callers."
+    - topic: "Shutdown result sharing"
+      decision: "Use one mutex-guarded shutdown owner, a shared completion channel, and one stored errors.Join result."
+      rationale: "The guarded owner blocks concurrent callers until one finite sequence completes, permits caller contexts to request immediate escalation, and guarantees every caller reads the same immutable stored error."
+      alternatives_considered:
+        - "Independent shutdown attempts, which duplicate signaling and cleanup."
+        - "Return early to later callers on their own context, which would violate the shared completed-result invariant."
+    - topic: "Owned path cleanup"
+      decision: "Record the exact runtime directory and expected socket paths at launch, validate the runtime as a real directory below the recorded home, remove that owned runtime tree, and remove the home only when the SDK created a temp-prefix home."
+      rationale: "The runtime directory is per-instance and safe to remove recursively after process termination, while caller-owned durable home state remains untouched."
+      alternatives_considered:
+        - "Use ambient JCODE_HOME during shutdown, which can drift."
+        - "Remove a caller-supplied home, which violates ownership."
+        - "Remove only one socket and leave other private runtime files behind."
+    - topic: "Client close versus detach"
+      decision: "Under stateMu, closing sets StateClosing, claims and clears instance, then releases the mutex before performing transport and instance shutdown. Detach rejects closing or closed clients."
+      rationale: "One atomic ownership decision prevents both transfer and client shutdown from winning."
+      alternatives_considered:
+        - "Read instance after closing transport without clearing it, which allows a detach race."
+        - "Hold stateMu through shutdown, which creates unnecessary lock coupling and blocking."
+
+# No persistent domain data model or network API is introduced. These entries describe internal lifecycle state only.
+data_model:
+  entities:
+    - name: "launchedInstance"
+      description: "One SDK-owned private Linux runtime and its immutable ownership record plus shared shutdown state."
+      fields:
+        - name: "processGroupID"
+          type: "int"
+          description: "Recorded bridge process group ID used for negative group signaling."
+          constraints: "Must be greater than one before any group signal."
+        - name: "waitDone"
+          type: "receive-only channel of error"
+          description: "Single result produced by the sole cmd.Wait goroutine."
+          constraints: "Consumed at most once and only through finite selects."
+        - name: "owned paths"
+          type: "absolute or cleaned path strings"
+          description: "Recorded socket, runtime directory, and home ownership boundaries."
+          constraints: "Cleanup validates containment and rejects symlinked root directories."
+        - name: "shutdown result"
+          type: "guarded error plus completion channel"
+          description: "Immutable joined result shared after sync.Once completion."
+          constraints: "Contains contextual operational causes but no sensitive protocol content."
+      relationships: []
+    - name: "Client instance attachment"
+      description: "Optional sole ownership link from a launched Client to one Instance."
+      fields:
+        - name: "instance"
+          type: "Instance"
+          description: "Attached private runtime ownership before close or detach wins."
+          constraints: "Claimed and cleared atomically under stateMu."
+      relationships:
+        - target: "launchedInstance"
+          type: "one-to-one"
+          description: "The launched client owns one private instance until detach transfers it."
+
+api_contracts:
+  endpoints: []
+
+project_structure:
+  documentation:
+    - path: "specs/001-linux-private-shutdown/spec.yaml"
+      description: "Reviewed behavioral specification."
+    - path: "specs/001-linux-private-shutdown/plan.yaml"
+      description: "Reviewed implementation plan and safety decisions."
+    - path: "specs/001-linux-private-shutdown/tasks.yaml"
+      description: "Executable task breakdown and validation mapping."
+    - path: "specs/001-linux-private-shutdown/execution.md"
+      description: "Autospec profile incompatibility record and direct-stage execution evidence."
+  source_code:
+    - path: "launch.go"
+      description: "Launch configuration, instance ownership record, shared shutdown sequence, additive helper, daemon registry match, and owned-path cleanup."
+    - path: "process_unix.go"
+      description: "Unix process-group setup, safe group signaling, liveness checks, daemon stop signal, and bounded TERM/KILL/reap implementation."
+    - path: "client.go"
+      description: "Minimal atomic Client.Close versus DetachInstance ownership adjustment."
+    - path: "process_windows.go"
+      description: "Only a minimal internal signature compatibility adjustment if required for cross-platform compilation; no Windows parity."
+  tests:
+    - path: "process_unix_test.go"
+      description: "Linux process group, TERM cooperation, KILL escalation, descendants, bounded reap, repeated shutdown, and path cleanup tests."
+    - path: "ownership_test.go"
+      description: "Deterministic and concurrent Client.Close versus DetachInstance ownership tests."
+
+implementation_phases:
+  - phase: 1
+    name: "Supervision fixtures and failing tests"
+    goal: "Encode process-group, bounded shutdown, idempotence, and path ownership behavior before implementation."
+    deliverables:
+      - "Linux controlled-child tests for cooperative TERM and forced group KILL."
+      - "Bounded non-delivering wait result test."
+      - "Ephemeral and caller-owned home cleanup tests."
+      - "Atomic client detach/close race tests."
+  - phase: 2
+    name: "Linux shutdown implementation"
+    goal: "Implement process ownership, context-aware bounded shutdown, shared results, and safe cleanup."
+    dependencies:
+      - "Phase 1"
+    deliverables:
+      - "Finite ShutdownGrace and ReapTimeout LaunchOptions defaults."
+      - "Owned process group before Start and negative group signaling."
+      - "Single bounded waitDone consumption and context-triggered escalation."
+      - "Instance-scoped daemon stop and validated runtime/home cleanup."
+      - "Additive ShutdownInstance helper."
+  - phase: 3
+    name: "Atomic client ownership"
+    goal: "Serialize closing and detach without broad Client changes."
+    dependencies:
+      - "Phase 2"
+    deliverables:
+      - "Close atomically claims and clears attached instance."
+      - "Detach rejects ownership transfer once closing begins."
+      - "Ownership tests pass under the race detector."
+  - phase: 4
+    name: "Validation and handoff"
+    goal: "Prove focused behavior, repository compatibility, race safety, and clean scoped delivery."
+    dependencies:
+      - "Phase 3"
+    deliverables:
+      - "Focused supervision and ownership tests pass."
+      - "go test ./... -count=1 passes."
+      - "go test -race ./... -count=1 passes if bounded."
+      - "git diff --check passes and explicit files are committed."
+
+open_questions: []
+
+_meta:
+  version: "1.0.0"
+  generator: "autospec"
+  generator_version: "dev-fbcd884"
+  created: "2026-08-10T18:23:46Z"
+  artifact_type: "plan"
