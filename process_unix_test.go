@@ -153,7 +153,7 @@ func TestShutdownCancellationIsPreservedAlongsidePhaseFailure(t *testing.T) {
 	}
 }
 
-func TestTerminateProcessDoesNotInspectOrSignalAfterWaitReceived(t *testing.T) {
+func TestTerminateProcessDoesNotInspectOrSignalAfterLeaderReap(t *testing.T) {
 	var signals []syscall.Signal
 	aliveCalls := 0
 	operations := processGroupOperations{
@@ -167,7 +167,7 @@ func TestTerminateProcessDoesNotInspectOrSignalAfterWaitReceived(t *testing.T) {
 		},
 	}
 
-	_, err := terminateProcessGroup(42, closedWaitResult(nil), time.Second, time.Second, nil, operations)
+	_, err := terminateProcessGroup(42, closedWaitResult(nil), 10*time.Millisecond, 10*time.Millisecond, nil, operations)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestTerminateProcessDoesNotInspectOrSignalAfterWaitReceived(t *testing.T) {
 	}
 }
 
-func TestTerminateProcessDoesNotInspectOrKillWhenWaitArrivesAfterTERM(t *testing.T) {
+func TestTerminateProcessDoesNotInspectOrKillWhenLeaderReapsAfterTERM(t *testing.T) {
 	waitDone := make(chan error, 1)
 	var signals []syscall.Signal
 	aliveCalls := 0
@@ -197,7 +197,7 @@ func TestTerminateProcessDoesNotInspectOrKillWhenWaitArrivesAfterTERM(t *testing
 		},
 	}
 
-	_, err := terminateProcessGroup(42, waitDone, time.Second, time.Second, nil, operations)
+	_, err := terminateProcessGroup(42, waitDone, 10*time.Millisecond, 10*time.Millisecond, nil, operations)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -373,6 +373,8 @@ session IDs, secret-bearing environment values, or private runtime paths. Keep
 observer implementations equally strict and fast because lifecycle code calls
 them synchronously and may call them concurrently.
 
+Linux maintainers can run the deterministic private-runtime acceptance and the explicitly gated real OpenAI OAuth smoke described in [`docs/private-runtime-acceptance.md`](docs/private-runtime-acceptance.md).
+
 ## Security guidance
 
 - Unix sockets and runtime directories should be owner-only. Do not change permissions to make a shared socket world-readable.
