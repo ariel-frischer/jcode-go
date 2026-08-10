@@ -404,6 +404,28 @@ func TestShutdownCleanupContinuesAfterRuntimePathError(t *testing.T) {
 	}
 }
 
+func TestLaunchInstanceRejectsSymlinkRuntimeBeforeRemovingPaths(t *testing.T) {
+	home := t.TempDir()
+	outside := t.TempDir()
+	outsideSocket := filepath.Join(outside, "jcode-api.sock")
+	if err := os.WriteFile(outsideSocket, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(home, "run")); err != nil {
+		t.Fatal(err)
+	}
+	inheritLogins := false
+	instance, err := LaunchInstance(LaunchOptions{
+		JcodeHome: home, InheritLogins: &inheritLogins, Binary: filepath.Join(t.TempDir(), "missing-jcode"),
+	})
+	if err == nil || instance != nil {
+		t.Fatalf("LaunchInstance() = (%v, %v), want startup failure", instance, err)
+	}
+	if data, readErr := os.ReadFile(outsideSocket); readErr != nil || string(data) != "keep" {
+		t.Fatalf("outside socket = %q, %v; launch followed runtime symlink", data, readErr)
+	}
+}
+
 func TestShutdownStopsOnlyRecordedDaemonPID(t *testing.T) {
 	daemon := startLinuxHelper(t, "cooperative")
 	unrelated := startLinuxHelper(t, "ignore")

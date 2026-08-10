@@ -385,11 +385,10 @@ func launchInstanceWithObserver(options LaunchOptions, observer Observer) (Insta
 		return nil, &LaunchError{Code: LaunchStartupFailed, Err: err}
 	}
 	runtimeDir := filepath.Join(home, "run")
-	if err := os.MkdirAll(runtimeDir, 0o700); err != nil {
+	if err := ensurePrivateDirectory(runtimeDir); err != nil {
 		cleanupOnError()
-		return nil, &LaunchError{Code: LaunchStartupFailed, Err: err}
+		return nil, &LaunchError{Code: LaunchStartupFailed, Err: fmt.Errorf("prepare instance runtime directory: %w", err)}
 	}
-	_ = os.Chmod(runtimeDir, 0o700)
 	ownedPaths := instanceOwnedRuntimePaths(runtimeDir)
 	cleanupOnError = func() {
 		_ = cleanupOwnedInstancePaths(home, runtimeDir, ownedPaths, ephemeral, o.CleanupTimeout)
