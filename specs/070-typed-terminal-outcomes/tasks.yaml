@@ -17,7 +17,7 @@ phases:
     tasks:
       - id: "T001"
         title: "Confirm current worktree and planning-only boundaries from AGENTS.md"
-        status: "Pending"
+        status: "Completed"
         type: "setup"
         parallel: false
         story_id: null
@@ -30,7 +30,7 @@ phases:
 
       - id: "T002"
         title: "Inspect existing Turn, Client, Session, launch, and test surfaces before editing turn.go"
-        status: "Pending"
+        status: "Completed"
         type: "setup"
         parallel: false
         story_id: null
@@ -43,7 +43,7 @@ phases:
 
       - id: "T003"
         title: "Capture baseline repository status and test result from go.mod"
-        status: "Pending"
+        status: "Completed"
         type: "setup"
         parallel: false
         story_id: null
@@ -60,7 +60,7 @@ phases:
     tasks:
       - id: "T004"
         title: "Add red stable terminal taxonomy and cause-inspection tests in turn_test.go"
-        status: "Pending"
+        status: "Completed"
         type: "test"
         parallel: false
         story_id: "US-001"
@@ -74,7 +74,7 @@ phases:
 
       - id: "T005"
         title: "Add red first-terminal immutability and conflict-matrix tests in turn_test.go"
-        status: "Pending"
+        status: "Completed"
         type: "test"
         parallel: false
         story_id: "US-001"
@@ -88,7 +88,7 @@ phases:
 
       - id: "T006"
         title: "Add red lifecycle, explicit-cancel, and per-method-context tests in turn_test.go"
-        status: "Pending"
+        status: "Completed"
         type: "test"
         parallel: false
         story_id: "US-002"
@@ -103,7 +103,7 @@ phases:
 
       - id: "T007"
         title: "Add red malformed, invalid, and oversized frame classification tests in client_validation_test.go"
-        status: "Pending"
+        status: "Completed"
         type: "test"
         parallel: true
         story_id: "US-001"
@@ -117,7 +117,7 @@ phases:
 
       - id: "T008"
         title: "Add red subscription isolation, disconnect, overflow, and close tests in client_test.go"
-        status: "Pending"
+        status: "Completed"
         type: "test"
         parallel: true
         story_id: "US-003"
@@ -131,7 +131,7 @@ phases:
 
       - id: "T009"
         title: "Add red private bridge wait-fanout and ownership-evidence tests in launch_test.go"
-        status: "Pending"
+        status: "Completed"
         type: "test"
         parallel: true
         story_id: "US-003"
@@ -145,7 +145,7 @@ phases:
 
       - id: "T010"
         title: "Add red raw API and ownership compatibility tests in ownership_test.go"
-        status: "Pending"
+        status: "Completed"
         type: "test"
         parallel: true
         story_id: "US-004"
@@ -159,7 +159,7 @@ phases:
 
       - id: "T011"
         title: "Add red owned-turn redaction assertions in turn_test.go"
-        status: "Pending"
+        status: "Completed"
         type: "test"
         parallel: false
         story_id: "US-004"
@@ -173,7 +173,7 @@ phases:
 
       - id: "T012"
         title: "Run the complete red contract suite from turn_test.go before production changes"
-        status: "Pending"
+        status: "Completed"
         type: "test"
         parallel: false
         story_id: null
@@ -192,7 +192,7 @@ phases:
     tasks:
       - id: "T013"
         title: "Export TurnResultKind constants and minimal sentinels in turn.go"
-        status: "Pending"
+        status: "Completed"
         type: "implementation"
         parallel: false
         story_id: "US-001"
@@ -205,7 +205,7 @@ phases:
 
       - id: "T014"
         title: "Centralize Turn terminal commit, cause classification, and redaction in turn.go"
-        status: "Pending"
+        status: "Completed"
         type: "implementation"
         parallel: false
         story_id: "US-001"
@@ -220,7 +220,7 @@ phases:
 
       - id: "T015"
         title: "Run focused normal Turn outcome tests in turn_test.go"
-        status: "Pending"
+        status: "Completed"
         type: "test"
         parallel: false
         story_id: "US-001"
@@ -233,7 +233,7 @@ phases:
 
       - id: "T016"
         title: "Run focused race Turn outcome tests in turn_test.go"
-        status: "Pending"
+        status: "Completed"
         type: "test"
         parallel: false
         story_id: "US-001"
@@ -251,7 +251,7 @@ phases:
     tasks:
       - id: "T017"
         title: "Implement distinct lifecycle cancellation and deadline outcomes in turn.go"
-        status: "Pending"
+        status: "Completed"
         type: "implementation"
         parallel: false
         story_id: "US-002"
@@ -265,7 +265,7 @@ phases:
 
       - id: "T018"
         title: "Implement one-shot explicit server cancellation semantics in turn.go"
-        status: "Pending"
+        status: "Completed"
         type: "implementation"
         parallel: false
         story_id: "US-002"
@@ -279,7 +279,7 @@ phases:
 
       - id: "T019"
         title: "Run focused normal cancellation and lifecycle tests in turn_test.go"
-        status: "Pending"
+        status: "Completed"
         type: "test"
         parallel: false
         story_id: "US-002"
@@ -292,7 +292,7 @@ phases:
 
       - id: "T020"
         title: "Run focused race cancellation and lifecycle tests in turn_test.go"
-        status: "Pending"
+        status: "Completed"
         type: "test"
         parallel: false
         story_id: "US-002"
@@ -310,7 +310,7 @@ phases:
     tasks:
       - id: "T021"
         title: "Mark StartTurn's internal subscription as turn-only in session.go"
-        status: "Pending"
+        status: "Completed"
         type: "implementation"
         parallel: false
         story_id: "US-003"
@@ -323,7 +323,7 @@ phases:
 
       - id: "T022"
         title: "Route client disconnect, protocol, overflow, and close failures in client.go"
-        status: "Pending"
+        status: "Completed"
         type: "implementation"
         parallel: false
         story_id: "US-003"
@@ -337,7 +337,7 @@ phases:
 
       - id: "T023"
         title: "Fan out launched bridge wait results through private evidence in launch.go"
-        status: "Pending"
+        status: "Completed"
         type: "implementation"
         parallel: false
         story_id: "US-003"
@@ -351,7 +351,7 @@ phases:
 
       - id: "T024"
         title: "Forward attached bridge-exit evidence and resolve bridge races in client.go"
-        status: "Pending"
+        status: "Completed"
         type: "implementation"
         parallel: false
         story_id: "US-003"
@@ -365,7 +365,7 @@ phases:
 
       - id: "T025"
         title: "Run focused normal client, subscription, validation, and bridge tests in client_test.go"
-        status: "Pending"
+        status: "Completed"
         type: "test"
         parallel: false
         story_id: "US-003"
@@ -378,7 +378,7 @@ phases:
 
       - id: "T026"
         title: "Run focused race client, subscription, close, and bridge tests in client_test.go"
-        status: "Pending"
+        status: "Completed"
         type: "test"
         parallel: false
         story_id: "US-003"
@@ -396,7 +396,7 @@ phases:
     tasks:
       - id: "T027"
         title: "Run focused raw API and ownership compatibility tests in ownership_test.go"
-        status: "Pending"
+        status: "Completed"
         type: "test"
         parallel: false
         story_id: "US-004"
@@ -409,7 +409,7 @@ phases:
 
       - id: "T028"
         title: "Sync typed terminal outcome guidance in README.md"
-        status: "Pending"
+        status: "Completed"
         type: "documentation"
         parallel: true
         story_id: "US-004"
@@ -422,7 +422,7 @@ phases:
 
       - id: "T029"
         title: "Sync finalized lifecycle ownership contract in docs/architecture.md"
-        status: "Pending"
+        status: "Completed"
         type: "documentation"
         parallel: true
         story_id: "US-004"
@@ -439,7 +439,7 @@ phases:
     tasks:
       - id: "T030"
         title: "Run gofmt on all changed Go files"
-        status: "Pending"
+        status: "Completed"
         type: "refactor"
         parallel: false
         story_id: null
@@ -452,7 +452,7 @@ phases:
 
       - id: "T031"
         title: "Run the complete normal Go test suite from go.mod"
-        status: "Pending"
+        status: "Completed"
         type: "test"
         parallel: false
         story_id: null
@@ -465,7 +465,7 @@ phases:
 
       - id: "T032"
         title: "Run the complete race-enabled Go test suite from go.mod"
-        status: "Pending"
+        status: "Completed"
         type: "test"
         parallel: false
         story_id: null
@@ -477,7 +477,7 @@ phases:
 
       - id: "T033"
         title: "Run go vet across all packages from go.mod"
-        status: "Pending"
+        status: "Completed"
         type: "test"
         parallel: false
         story_id: null
@@ -489,7 +489,7 @@ phases:
 
       - id: "T034"
         title: "Run bounded Windows compile only for the additive public-file change from go.mod"
-        status: "Pending"
+        status: "Completed"
         type: "test"
         parallel: false
         story_id: null
@@ -502,7 +502,7 @@ phases:
 
       - id: "T035"
         title: "Inspect the tasks artifact and implementation status before landing"
-        status: "Pending"
+        status: "Completed"
         type: "test"
         parallel: false
         story_id: null
@@ -515,7 +515,7 @@ phases:
 
       - id: "T036"
         title: "Stage explicit implementation files and create one scoped commit"
-        status: "Pending"
+        status: "Completed"
         type: "refactor"
         parallel: false
         story_id: null
@@ -529,7 +529,7 @@ phases:
 
       - id: "T037"
         title: "Verify the scoped implementation branch is clean after commit"
-        status: "Pending"
+        status: "Completed"
         type: "test"
         parallel: false
         story_id: null
