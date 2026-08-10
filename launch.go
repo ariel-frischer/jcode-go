@@ -66,8 +66,13 @@ type LaunchOptions struct {
 	WorkingDir string
 	// InheritLogins is tri-state so its nil zero value preserves the SDK
 	// behavior shared by the Rust and TypeScript SDKs: inherit by default.
-	InheritLogins  *bool
-	Binary         string
+	InheritLogins *bool
+	Binary        string
+	// Provider and Model are passed as global jcode CLI selections when starting
+	// the private API bridge. Empty values preserve jcode's normal auto/config
+	// resolution.
+	Provider       string
+	Model          string
 	Env            map[string]string
 	StartupTimeout time.Duration
 	CleanupTimeout time.Duration
@@ -230,7 +235,7 @@ func launchInstanceWithObserver(options LaunchOptions, observer Observer) (Insta
 
 	binary := selectBinary(o.Binary)
 	socketPath := filepath.Join(runtimeDir, "jcode-api.sock")
-	cmd := exec.Command(binary, "api-bridge", "--api-socket", socketPath)
+	cmd := exec.Command(binary, launchArgs(o, socketPath)...)
 	cmd.Dir = o.WorkingDir
 	if cmd.Dir == "" {
 		cmd.Dir = "."
@@ -289,6 +294,17 @@ func launchInstanceWithObserver(options LaunchOptions, observer Observer) (Insta
 	emitLaunchObservation(observer, Observation{Kind: "launch_socket_timeout", Error: string(LaunchStartupTimeout)})
 	return nil, &LaunchError{Code: LaunchStartupTimeout, Binary: binary, Stderr: redactSecrets(stderrText, o.Env),
 		Err: fmt.Errorf("no API socket at %s within %s", socketPath, o.StartupTimeout)}
+}
+
+func launchArgs(options LaunchOptions, socketPath string) []string {
+	args := make([]string, 0, 7)
+	if provider := strings.TrimSpace(options.Provider); provider != "" {
+		args = append(args, "--provider", provider)
+	}
+	if model := strings.TrimSpace(options.Model); model != "" {
+		args = append(args, "--model", model)
+	}
+	return append(args, "api-bridge", "--api-socket", socketPath)
 }
 
 // launchEnvironment applies explicit SDK credentials as replacements rather

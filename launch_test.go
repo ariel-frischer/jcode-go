@@ -1,9 +1,36 @@
 package jcode
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestLaunchArgs(t *testing.T) {
+	tests := map[string]struct {
+		options LaunchOptions
+		want    []string
+	}{
+		"defaults": {
+			want: []string{"api-bridge", "--api-socket", "/private/api.sock"},
+		},
+		"provider and model": {
+			options: LaunchOptions{Provider: "openrouter", Model: "openai/gpt-5.6-luna"},
+			want:    []string{"--provider", "openrouter", "--model", "openai/gpt-5.6-luna", "api-bridge", "--api-socket", "/private/api.sock"},
+		},
+		"whitespace is normalized": {
+			options: LaunchOptions{Provider: " openai ", Model: " gpt-5.6-luna "},
+			want:    []string{"--provider", "openai", "--model", "gpt-5.6-luna", "api-bridge", "--api-socket", "/private/api.sock"},
+		},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			if got := launchArgs(test.options, "/private/api.sock"); !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("launchArgs() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
 
 func TestLaunchEnvironmentExplicitAPIKeyReplacesAmbientValue(t *testing.T) {
 	t.Setenv("OPENROUTER_API_KEY", "ambient-key")

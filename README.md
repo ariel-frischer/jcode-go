@@ -30,7 +30,7 @@ The module requires Go 1.23 or newer. The SDK has no third-party dependencies.
 There are two deployment patterns:
 
 1. **Connect to a shared instance.** Start `jcode api-bridge` once, then dial its owner-only Unix socket and pass the connection to `NewClient`. This is suitable for editor plugins, dashboards, and tools that intentionally operate on the user's live sessions.
-2. **Own a private instance.** `jcode.Launch` starts a separately configured bridge/daemon, gives it a separate home and socket, and returns a client that owns shutdown. `LaunchInstance` is available when the caller needs to control dialing. The Go SDK still does not provide typed session helpers, so protocol requests remain explicit.
+2. **Own a private instance.** `jcode.Launch` starts a separately configured bridge/daemon, gives it a separate home and socket, and returns a client that owns shutdown. `LaunchInstance` is available when the caller needs to control dialing. Typed session helpers and raw protocol requests are both available.
 
 ### Safe-run ownership
 
@@ -230,15 +230,20 @@ The Go SDK's `Launch` owns a private daemon, temporary home, credential policy, 
 ```go
 inherit := false
 client, err := jcode.Launch(ctx, jcode.LaunchOptions{
-    WorkingDir:  workingDir,
+    WorkingDir:    workingDir,
     InheritLogins: &inherit,
+    Provider:      "openrouter",
+    Model:         "openai/gpt-5.6-luna",
+    Env: map[string]string{
+        "OPENROUTER_API_KEY": os.Getenv("OPENROUTER_API_KEY"),
+    },
     ClientOptions: jcode.Options{ClientName: "my-service/1.0"},
 })
 if err != nil { return err }
 defer client.Close()
 ```
 
-`Launch` defaults to a temporary owner-only home and removes it on shutdown. Set `JcodeHome` to persist sessions. `LaunchInstance` starts the isolated process without dialing it, and its `SocketPath()` can be passed to `net.Dial("unix", ...)` and `NewClient`. Set `InheritLogins` to a bool pointer whose value is false to avoid copying/linking the user's recognized login files.
+`Launch` defaults to a temporary owner-only home and removes it on shutdown. Set `JcodeHome` to persist sessions. `LaunchInstance` starts the isolated process without dialing it, and its `SocketPath()` can be passed to `net.Dial("unix", ...)` and `NewClient`. `Provider` and `Model` become explicit global selections for the private jcode process; leave either empty to preserve jcode's normal auto/config resolution. Set `InheritLogins` to a bool pointer whose value is false to avoid copying/linking the user's recognized login files.
 
 When `InheritLogins` is false, provide provider credentials explicitly through `LaunchOptions.Env`, for example `OPENROUTER_API_KEY`. Explicit environment entries replace same-named ambient variables, so API-key-only authentication is deterministic rather than dependent on duplicate environment-key behavior. Startup diagnostics redact explicit values for keys, tokens, and secrets. Never print or persist the credential value yourself, and use per-request context deadlines for `Session.Send`.
 
