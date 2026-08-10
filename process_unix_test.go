@@ -101,8 +101,8 @@ func TestShutdownCancellationForcesEscalationButStillReaps(t *testing.T) {
 
 	started := time.Now()
 	err := ShutdownInstance(ctx, instance)
-	if err != nil {
-		t.Fatalf("ShutdownInstance() error = %v, want nil after successful forced shutdown", err)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ShutdownInstance() error = %v, want context.Canceled", err)
 	}
 	if elapsed := time.Since(started); elapsed >= time.Second {
 		t.Fatalf("canceled shutdown took %s, want immediate escalation", elapsed)
@@ -118,8 +118,8 @@ func TestShutdownDeadlineDuringGraceForcesEscalation(t *testing.T) {
 
 	started := time.Now()
 	err := ShutdownInstance(ctx, instance)
-	if err != nil {
-		t.Fatalf("ShutdownInstance() error = %v, want nil after successful forced shutdown", err)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("ShutdownInstance() error = %v, want context.DeadlineExceeded", err)
 	}
 	if elapsed := time.Since(started); elapsed >= 2*time.Second {
 		t.Fatalf("deadline-triggered shutdown took %s, want grace shortened", elapsed)
