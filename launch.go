@@ -285,8 +285,8 @@ func (i *launchedInstance) finishShutdown(phaseErr error) {
 	errs := make([]error, 0, len(i.shutdownContextErrs)+1)
 	if phaseErr != nil {
 		errs = append(errs, phaseErr)
-		errs = append(errs, i.shutdownContextErrs...)
 	}
+	errs = append(errs, i.shutdownContextErrs...)
 	i.shutdownErr = errors.Join(errs...)
 	i.shutdownFinished = true
 	close(i.shutdownDone)
