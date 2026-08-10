@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -141,7 +142,7 @@ func TestShutdownCancellationIsPreservedAlongsidePhaseFailure(t *testing.T) {
 	}
 }
 
-func TestTerminateProcessDoesNotInspectOrSignalAfterWaitReceived(t *testing.T) {
+func TestTerminateProcessChecksGroupAfterLeaderWaitReceived(t *testing.T) {
 	var signals []syscall.Signal
 	aliveCalls := 0
 	operations := processGroupOperations{
@@ -151,7 +152,7 @@ func TestTerminateProcessDoesNotInspectOrSignalAfterWaitReceived(t *testing.T) {
 		},
 		alive: func(int) (bool, error) {
 			aliveCalls++
-			return true, nil
+			return false, nil
 		},
 	}
 
@@ -162,12 +163,12 @@ func TestTerminateProcessDoesNotInspectOrSignalAfterWaitReceived(t *testing.T) {
 	if len(signals) != 0 {
 		t.Fatalf("signals = %v, want none after observing reap", signals)
 	}
-	if aliveCalls != 0 {
-		t.Fatalf("post-reap liveness checks = %d, want 0", aliveCalls)
+	if aliveCalls != 1 {
+		t.Fatalf("post-reap liveness checks = %d, want 1", aliveCalls)
 	}
 }
 
-func TestTerminateProcessDoesNotInspectOrKillWhenWaitArrivesAfterTERM(t *testing.T) {
+func TestTerminateProcessChecksGroupWhenLeaderWaitArrivesAfterTERM(t *testing.T) {
 	waitDone := make(chan error, 1)
 	var signals []syscall.Signal
 	aliveCalls := 0
@@ -181,7 +182,7 @@ func TestTerminateProcessDoesNotInspectOrKillWhenWaitArrivesAfterTERM(t *testing
 		},
 		alive: func(int) (bool, error) {
 			aliveCalls++
-			return true, nil
+			return false, nil
 		},
 	}
 
@@ -192,8 +193,31 @@ func TestTerminateProcessDoesNotInspectOrKillWhenWaitArrivesAfterTERM(t *testing
 	if len(signals) != 1 || signals[0] != syscall.SIGTERM {
 		t.Fatalf("signals = %v, want only SIGTERM before observing reap", signals)
 	}
-	if aliveCalls != 0 {
-		t.Fatalf("post-reap liveness checks = %d, want 0", aliveCalls)
+	if aliveCalls == 0 {
+		t.Fatal("owned process group was not checked after leader reap")
+	}
+}
+
+func TestTerminateProcessKillsSurvivingGroupAfterLeaderReap(t *testing.T) {
+	groupAlive := true
+	var signals []syscall.Signal
+	operations := processGroupOperations{
+		signal: func(_ int, signal syscall.Signal) error {
+			signals = append(signals, signal)
+			if signal == syscall.SIGKILL {
+				groupAlive = false
+			}
+			return nil
+		},
+		alive: func(int) (bool, error) { return groupAlive, nil },
+	}
+
+	_, err := terminateProcessGroup(42, closedWaitResult(nil), 10*time.Millisecond, time.Second, nil, operations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []syscall.Signal{syscall.SIGTERM, syscall.SIGKILL}; !reflect.DeepEqual(signals, want) {
+		t.Fatalf("signals = %v, want %v", signals, want)
 	}
 }
 
