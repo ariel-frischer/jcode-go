@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/ariel-frischer/jcode-go/transport"
 )
 
 type safeObservationRecorder struct {
@@ -41,6 +43,53 @@ func (r *safeObservationRecorder) waitForKind(t *testing.T, kind string) []Obser
 	}
 	t.Fatalf("observation %q was not emitted: %+v", kind, r.snapshot())
 	return nil
+}
+
+func TestConnectErrorObservationIsBoundedAndRedacted(t *testing.T) {
+	recorder := &safeObservationRecorder{}
+	clientSide, serverSide := transport.NewPipePair()
+	server := transport.NewFakeServer(serverSide)
+	defer server.Close()
+
+	const (
+		privateClientName = "private-client-identifier"
+		privateMessage    = "credential-secret from /private/runtime/api.sock"
+	)
+	serverDone := make(chan error, 1)
+	go func() {
+		hello, err := receiveTurnRequest(server)
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		serverDone <- server.Send(mustServerFrame(t, hello.ID, "error", map[string]any{
+			"code":    "handshake_rejected",
+			"message": privateMessage,
+		}))
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	client, err := NewClient(ctx, clientSide, Options{
+		ClientName: privateClientName,
+		Observer:   recorder,
+	})
+	if err == nil || client != nil {
+		t.Fatal("NewClient() succeeded, want handshake failure")
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+
+	observations := recorder.waitForKind(t, "connect_error")
+	assertObservationSubsequence(t, observations, []Observation{
+		{Kind: "connect_start"},
+		{Kind: "connect_error", Error: "handshake_failed"},
+	})
+	assertObservationCount(t, observations, "connect_error", 1)
+	assertObservationCount(t, observations, "connect_ready", 0)
+	assertObservationsExclude(t, observations, privateClientName, privateMessage,
+		"credential-secret", "/private/runtime/api.sock")
 }
 
 func TestTurnLifecycleObservationsAreBoundedAndRedacted(t *testing.T) {
@@ -176,6 +225,76 @@ func TestTurnCancellationRequestObservationsAreSharedAndRedacted(t *testing.T) {
 		{Kind: "turn_terminal", Outcome: TurnResultCanceled},
 	})
 	assertObservationsExclude(t, observations, sessionID, "cancel-prompt-secret")
+}
+
+func TestTurnCancellationRequestErrorObservationIsBoundedAndRedacted(t *testing.T) {
+	recorder := &safeObservationRecorder{}
+	client, server := newTurnTestClient(t, Options{Observer: recorder})
+	defer client.Close()
+	defer server.Close()
+
+	const (
+		sessionID      = "session-cancel-error-private"
+		prompt         = "cancel-error-prompt-secret"
+		privateCode    = "cancel-private-code"
+		privateMessage = "credential-secret from /private/runtime/api.sock"
+	)
+	serverDone := make(chan error, 1)
+	go func() {
+		if _, err := receiveTurnRequest(server); err != nil {
+			serverDone <- err
+			return
+		}
+		if err := server.Send(mustEventFrame(t, "message_accepted", map[string]any{"session_id": sessionID})); err != nil {
+			serverDone <- err
+			return
+		}
+		request, err := receiveTurnRequest(server)
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if err := server.Send(mustServerFrame(t, request.ID, "error", map[string]any{
+			"code":    privateCode,
+			"message": privateMessage,
+		})); err != nil {
+			serverDone <- err
+			return
+		}
+		serverDone <- server.Send(mustEventFrame(t, "turn_done", map[string]any{"session_id": sessionID}))
+	}()
+
+	turn, err := (Session{client: client, ID: sessionID}).StartTurn(context.Background(), prompt, SendOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := turn.Accepted(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := turn.Cancel(ctx); err == nil {
+		t.Fatal("Cancel() error = nil, want rejected request")
+	}
+	result, err := turn.Wait(ctx)
+	if err != nil || result.Kind != TurnResultCompleted {
+		t.Fatalf("Wait() = %+v, %v, want completed", result, err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+
+	observations := recorder.waitForKind(t, "turn_terminal")
+	assertObservationSubsequence(t, observations, []Observation{
+		{Kind: "turn_cancel_request_start"},
+		{Kind: "turn_cancel_request_error", Error: "request_failed"},
+	})
+	assertObservationCount(t, observations, "turn_cancel_request_start", 1)
+	assertObservationCount(t, observations, "turn_cancel_request_error", 1)
+	assertObservationCount(t, observations, "turn_cancel_request_complete", 0)
+	assertObservationCount(t, observations, "turn_terminal", 1)
+	assertObservationsExclude(t, observations, sessionID, prompt, privateCode, privateMessage,
+		"credential-secret", "/private/runtime/api.sock")
 }
 
 func TestLaunchInstanceFailureObservationsAreBoundedAndRedacted(t *testing.T) {

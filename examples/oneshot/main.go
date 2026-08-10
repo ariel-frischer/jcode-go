@@ -38,7 +38,7 @@ func run(lifecycleCtx context.Context, args []string) error {
 	}
 	conn, err := net.Dial("unix", socketPath)
 	if err != nil {
-		return fmt.Errorf("connect to %s: %w", socketPath, err)
+		return errors.New("connect to API socket")
 	}
 	client, err := jcode.NewClient(lifecycleCtx, conn, jcode.Options{ClientName: "go-oneshot-example/0.1"})
 	if err != nil {

@@ -284,8 +284,9 @@ func (i *launchedInstance) runShutdown() error {
 	if err := cleanupOwnedInstancePaths(i.jcodeHome, i.runtimeDir, i.ownedPaths,
 		i.ephemeral, i.cleanupTimeout); err != nil {
 		errs = append(errs, err)
+	} else {
+		emitLaunchObservation(i.observer, Observation{Kind: "shutdown_cleanup_complete"})
 	}
-	emitLaunchObservation(i.observer, Observation{Kind: "shutdown_cleanup_complete"})
 	return errors.Join(errs...)
 }
 

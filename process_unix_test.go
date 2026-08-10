@@ -232,6 +232,37 @@ func TestTerminateProcessAggregatesUnreapedEscalationErrors(t *testing.T) {
 	}
 }
 
+func TestTerminateProcessReapTimeoutOmitsCompleteObservation(t *testing.T) {
+	recorder := &safeObservationRecorder{}
+	const processGroupID = 4242
+	operations := processGroupOperations{
+		signal: func(int, syscall.Signal) error { return nil },
+		alive:  func(int) (bool, error) { return true, nil },
+	}
+
+	started := time.Now()
+	_, err := terminateProcessGroup(processGroupID, make(chan error), time.Millisecond,
+		10*time.Millisecond, nil, operations, func(kind string) {
+			recorder.Observe(Observation{Kind: kind})
+		})
+	if err == nil || !strings.Contains(err.Error(), "reap") {
+		t.Fatal("terminateProcessGroup() did not return a reap timeout")
+	}
+	if elapsed := time.Since(started); elapsed >= time.Second {
+		t.Fatalf("terminateProcessGroup() took %s, want finite escalation", elapsed)
+	}
+
+	observations := recorder.snapshot()
+	assertObservationSubsequence(t, observations, []Observation{
+		{Kind: "shutdown_grace_start"},
+		{Kind: "shutdown_grace_complete"},
+		{Kind: "shutdown_force_kill"},
+	})
+	assertObservationCount(t, observations, "shutdown_reap_complete", 0)
+	assertObservationsExclude(t, observations, strconv.Itoa(processGroupID),
+		"credential-secret", "/private/runtime/api.sock")
+}
+
 func TestTerminateProcessBoundsReapWhenUnreapedGroupIsAbsent(t *testing.T) {
 	var signals []syscall.Signal
 	operations := processGroupOperations{
@@ -530,6 +561,41 @@ func TestShutdownCleanupContinuesAfterRuntimePathError(t *testing.T) {
 	if _, err := os.Stat(outsideFile); err != nil {
 		t.Fatalf("unowned path removed after cleanup error: %v", err)
 	}
+}
+
+func TestShutdownCleanupFailureOmitsCompleteObservation(t *testing.T) {
+	recorder := &safeObservationRecorder{}
+	home := t.TempDir()
+	outside := t.TempDir()
+	outsideFile := filepath.Join(outside, "jcode-api.sock")
+	if err := os.WriteFile(outsideFile, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runtimeLink := filepath.Join(home, "run")
+	if err := os.Symlink(outside, runtimeLink); err != nil {
+		t.Fatal(err)
+	}
+	instance := &launchedInstance{
+		jcodeHome: home, runtimeDir: runtimeLink, ownedPaths: []string{outsideFile},
+		cleanupTimeout: 20 * time.Millisecond, observer: recorder,
+	}
+
+	started := time.Now()
+	if err := instance.Shutdown(); err == nil {
+		t.Fatal("Shutdown() error = nil, want owned runtime validation error")
+	}
+	if elapsed := time.Since(started); elapsed >= time.Second {
+		t.Fatalf("Shutdown() took %s, want bounded cleanup failure", elapsed)
+	}
+
+	observations := recorder.waitForKind(t, "shutdown_complete")
+	assertObservationSubsequence(t, observations, []Observation{
+		{Kind: "shutdown_start"},
+		{Kind: "shutdown_complete", Error: "shutdown_failed"},
+	})
+	assertObservationCount(t, observations, "shutdown_cleanup_complete", 0)
+	assertObservationsExclude(t, observations, home, runtimeLink, outsideFile,
+		"credential-secret", "/private/runtime/api.sock")
 }
 
 func TestRemoveOwnedRuntimePathsReturnsUnsafeTypeWithoutRetrying(t *testing.T) {

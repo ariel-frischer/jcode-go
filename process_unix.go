@@ -125,8 +125,9 @@ func terminateProcessGroup(
 	if !alive {
 		if err := waitForProcessReap(processGroupID, waitDone, reapTimeout); err != nil {
 			errs = append(errs, err)
+		} else {
+			emit("shutdown_reap_complete")
 		}
-		emit("shutdown_reap_complete")
 		return contextTriggered, errors.Join(errs...)
 	}
 
@@ -143,8 +144,9 @@ func terminateProcessGroup(
 
 	if err := waitForProcessReap(processGroupID, waitDone, reapTimeout); err != nil {
 		errs = append(errs, err)
+	} else {
+		emit("shutdown_reap_complete")
 	}
-	emit("shutdown_reap_complete")
 	return contextTriggered, errors.Join(errs...)
 }
 
