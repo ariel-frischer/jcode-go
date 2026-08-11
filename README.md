@@ -440,3 +440,34 @@ go build ./examples/oneshot ./examples/streaming ./examples/private
 ```
 
 They require a live jcode bridge only at runtime. `go build` and `go test` do not contact a daemon.
+
+## Canonical validation and publication
+
+The canonical source for this module is `sdk/go/` in Ariel Frischer's Jcode repository. `github.com/ariel-frischer/jcode-go` is the public publication destination. The public repository also owns repository-specific governance, specifications, worktree/task state, automation, and maintainer documentation; those paths are not SDK payload and must never be removed by publication.
+
+From the Jcode repository root, run the complete non-mutating validation contract:
+
+```bash
+scripts/validate_go_sdk.sh
+```
+
+It reports all seven boundaries even if one fails: formatting, module consistency (`go mod tidy -diff` and `go mod verify`), vet, build, tests, race tests, and Windows amd64 build. CI runs the same command with Go 1.23.x and 1.24.x. Results from a newer local Go toolchain are supplementary rather than matrix evidence.
+
+Publication begins with a deterministic, read-only preview:
+
+```bash
+scripts/sync-jcode-go.sh preview \
+  --source sdk/go \
+  --destination /absolute/path/to/jcode-go > /tmp/jcode-go.manifest
+```
+
+Review the timestamp-free manifest and verify its source/destination fingerprints, named include/protect rules, exact operations, and retained exclusions. Preview is also the default mode and changes neither tree. A future explicitly authorized publication may apply that exact reviewed manifest only while both inputs remain unchanged:
+
+```bash
+scripts/sync-jcode-go.sh apply \
+  --source sdk/go \
+  --destination /absolute/path/to/jcode-go \
+  --manifest /tmp/jcode-go.manifest
+```
+
+Apply rejects stale, malformed, unsafe, dirty, wrong-branch, or wrong-repository inputs before writing. Preview and validation alone do not authorize live publication. Applying the reviewed manifest, committing the public repository, and pushing `main` each require explicit maintainer approval.
