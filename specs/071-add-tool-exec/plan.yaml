@@ -16,7 +16,8 @@ summary: |
   unknown or near-match kinds. Add protocol coverage proving tool_exec remains a
   known RawEvent whose three canonical values survive decoding, while an unknown
   kind remains protocol.UnknownEvent. No lifecycle, Locus, provider, ownership,
-  README documentation, or unrelated event changes are included beyond adding ToolExec to the existing typed-stream event list.
+  or unrelated event changes are included. README only lists ToolExec alongside
+  the existing typed-stream event family.
 
 technical_context:
   language: "Go 1.23"
@@ -236,10 +237,7 @@ risks:
     impact: "medium"
     mitigation: "Use CallID with json tag call_id and assert three distinct canonical values in both protocol and typed tests."
 
-open_questions:
-  - question: "No blocking design questions remain for task generation."
-    context: "The canonical Rust contract, translation mapping, existing Go tool event family, raw protocol classification, and validation commands are all explicit."
-    proposed_resolution: "Proceed to /autospec.tasks with the three phases and file boundaries in this plan."
+open_questions: []
 
 _meta:
   version: "1.0.0"
