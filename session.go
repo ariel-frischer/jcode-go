@@ -265,6 +265,14 @@ type ToolInputDelta struct {
 
 func (ToolInputDelta) typedEvent() {}
 
+type ToolExec struct {
+	SessionID string `json:"session_id"`
+	CallID    string `json:"call_id"`
+	Name      string `json:"name"`
+}
+
+func (ToolExec) typedEvent() {}
+
 type ToolDone struct {
 	SessionID string `json:"session_id"`
 	CallID    string `json:"call_id"`
@@ -327,6 +335,8 @@ func decodeTypedEvent(event Event) (TypedEvent, error) {
 		value = &ToolStart{}
 	case "tool_input_delta":
 		value = &ToolInputDelta{}
+	case "tool_exec":
+		value = &ToolExec{}
 	case "tool_done":
 		value = &ToolDone{}
 	case "token_usage":

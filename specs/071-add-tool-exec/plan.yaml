@@ -1,0 +1,249 @@
+plan:
+  branch: "agent/jcode-go-by7-tool-exec"
+  created: "2026-08-10"
+  spec_path: "specs/071-add-tool-exec/spec.yaml"
+
+summary: |
+  Add ToolExec as one exported peer of ToolStart, ToolInputDelta, and ToolDone in
+  the existing typed event surface. The struct will contain only SessionID,
+  CallID, and Name string fields with the canonical JSON names, and
+  decodeTypedEvent will recognize only the exact tool_exec kind before using the
+  existing Event.Decode path. This keeps protocol v1 framing and raw event access
+  unchanged.
+
+  Add focused table-driven typed tests for all four tool lifecycle event kinds,
+  exact ToolExec value preservation, empty-string preservation, and genuinely
+  unknown or near-match kinds. Add protocol coverage proving tool_exec remains a
+  known RawEvent whose three canonical values survive decoding, while an unknown
+  kind remains protocol.UnknownEvent. No lifecycle, Locus, provider, ownership,
+  README documentation, or unrelated event changes are included beyond adding ToolExec to the existing typed-stream event list.
+
+technical_context:
+  language: "Go 1.23"
+  framework: "None"
+  primary_dependencies:
+    - name: "Go standard library"
+      version: "1.23"
+      purpose: "Use encoding/json and the testing package through the SDK's existing event decoding and test patterns."
+    - name: "github.com/ariel-frischer/jcode-go/protocol"
+      version: "module-local protocol v1"
+      purpose: "Reuse the existing known RawEvent classification, FieldsJSON access, and fail-closed UnknownEvent behavior without changing raw APIs."
+  storage: "None"
+  testing:
+    framework: "Go testing package"
+    approach: "Write focused table-driven typed API and protocol decoding tests first, run focused package tests, then run go test ./... -count=1 and git diff --check."
+  target_platform: "All platforms supported by the existing Go SDK; no platform-specific runtime or Windows supervision work"
+  project_type: "library"
+  performance_goals: "No new allocation, goroutine, I/O, or lifecycle path beyond the existing JSON decode into one small typed event value."
+  constraints:
+    - "Expose exactly one minimal additive ToolExec contract with SessionID, CallID, and Name string fields."
+    - "Recognize only the exact tool_exec event kind through the existing typed decoder."
+    - "Preserve canonical session_id, call_id, and name values exactly, including empty strings."
+    - "Keep protocol known-event classification, raw protocol APIs, and genuinely unknown-event semantics unchanged."
+    - "Do not change lifecycle ownership, Locus, providers, provider configuration, execution policy, or unrelated typed events."
+    - "Remain on the assigned agent/jcode-go-by7-tool-exec branch and do not create or switch branches."
+    - "The worker may edit, test, and commit only its scoped implementation; merge, push, Bead mutation, and worktree cleanup remain orchestrator-owned."
+  scale_scope: "One exported three-string event struct, one exact typed-decoder switch case, and focused tests in the existing root and protocol packages."
+
+constitution_check:
+  constitution_path: ".autospec/constitution.yaml"
+  gates:
+    - name: "Protocol v1 Compatibility and Minimal Additive APIs"
+      status: "PASS"
+      notes: "The plan adds one typed struct and one exact decoder case while preserving raw Request, Notify, Subscribe, Session.Send, Session.Events, framing, signatures, and existing event behavior."
+    - name: "Explicit Lifecycle Ownership and Working Directories"
+      status: "PASS"
+      notes: "Typed value decoding does not change Client, Turn, Instance, session working directories, process ownership, or cleanup responsibilities."
+    - name: "First-Terminal-Wins Immutable Outcomes"
+      status: "N/A"
+      notes: "ToolExec is non-terminal and the plan does not modify Turn terminal state or outcome synchronization."
+    - name: "Distinct Cancellation and Unknown-Outcome Semantics"
+      status: "N/A"
+      notes: "The plan does not touch cancellation, request replay, mutation outcomes, or wait contexts."
+    - name: "Redacted Typed Errors and Observability"
+      status: "PASS"
+      notes: "No error, observation, logging, or diagnostic surface changes; tests use synthetic identifiers only."
+    - name: "Race-Safe Concurrency and Subscription Isolation"
+      status: "N/A"
+      notes: "The additive struct and synchronous decoder switch do not change queues, goroutines, subscriptions, channel ownership, or close behavior."
+    - name: "Bounded and Owned Linux Private-Runtime Cleanup"
+      status: "N/A"
+      notes: "No launch, process supervision, signals, paths, cleanup, or platform-specific files are touched."
+    - name: "Focused, Race, and Public-Path Validation"
+      status: "PASS"
+      notes: "Focused typed and protocol tests precede the full go test ./... -count=1 suite and git diff --check; race testing is not required because no shared concurrency changes."
+    - name: "Explicit Orchestrator Boundary and Execution Policy"
+      status: "PASS"
+      notes: "The plan stays in the assigned worktree and introduces no provider, model, fallback, retry, merge, push, Bead, or worktree-management behavior."
+
+research_findings:
+  decisions:
+    - topic: "Canonical ToolExec field contract"
+      decision: "Define exported type ToolExec with SessionID, CallID, and Name string fields tagged session_id, call_id, and name."
+      rationale: "The authoritative Rust ApiEvent::ToolExec contract contains exactly those three strings, and translate.rs maps ServerEvent::ToolExec id to call_id while adding the session identifier."
+      alternatives_considered:
+        - "Reuse ToolStart by aliasing it, which obscures the distinct lifecycle event and its concrete type."
+        - "Add output, input, error, timestamps, or optional fields, which are not present in the canonical contract."
+    - topic: "Typed decoder integration point"
+      decision: "Add one exact tool_exec case beside tool_start, tool_input_delta, and tool_done in decodeTypedEvent and use the existing Event.Decode method."
+      rationale: "This is the established typed event pattern and preserves JSON decoding behavior, malformed-event handling, and the TypedEvent interface without a parallel decoder."
+      alternatives_considered:
+        - "Decode ToolExec in Client or protocol, which would cross the existing raw-versus-typed layer boundary."
+        - "Classify by payload shape, which would weaken exact-kind and UnknownEvent semantics."
+    - topic: "Raw protocol behavior"
+      decision: "Do not change protocol.knownEvents because tool_exec is already present; add a regression test that it decodes to RawEvent and preserves canonical fields."
+      rationale: "The current protocol layer correctly distinguishes known raw events from genuinely unknown kinds, so implementation belongs only in the typed SDK layer."
+      alternatives_considered:
+        - "Add a protocol.ToolExec type, which changes the raw protocol API and duplicates the typed surface."
+        - "Remove tool_exec from knownEvents and decode it elsewhere, which would regress existing raw behavior."
+    - topic: "Focused compatibility coverage"
+      decision: "Use table-driven typed decoding coverage for ToolStart, ToolInputDelta, ToolExec, ToolDone, an unknown kind, and a near-match kind; separately assert raw protocol value preservation and unknown classification."
+      rationale: "This directly exercises the requested peer mapping, exact spelling, value fidelity, empty values, and fail-closed behavior with minimal test surface."
+      alternatives_considered:
+        - "Exercise only a full fake-server stream, which is slower and makes decoder failures less local."
+        - "Test only ToolExec success, which would not prove preservation of neighboring mappings or UnknownEvent behavior."
+
+data_model:
+  entities:
+    - name: "ToolExec"
+      description: "Exported typed SDK event indicating that a named tool call is being executed in a session."
+      fields:
+        - name: "SessionID"
+          type: "string"
+          description: "Session identifier decoded from session_id."
+          constraints: "Preserved exactly; empty string remains empty."
+        - name: "CallID"
+          type: "string"
+          description: "Tool call identifier decoded from call_id, originating from ServerEvent::ToolExec id."
+          constraints: "Preserved exactly; empty string remains empty."
+        - name: "Name"
+          type: "string"
+          description: "Canonical tool name decoded from name."
+          constraints: "Preserved exactly; empty string remains empty."
+      relationships:
+        - target: "TypedEvent"
+          type: "many-to-one"
+          description: "ToolExec implements the existing closed-package typedEvent marker and is returned through TypedEvent."
+        - target: "protocol.RawEvent"
+          type: "one-to-one"
+          description: "A known raw tool_exec event is converted to one ToolExec value by the typed decoder."
+    - name: "UnknownEvent"
+      description: "Existing fail-closed typed representation for an event kind not recognized by decodeTypedEvent."
+      fields:
+        - name: "Kind"
+          type: "string"
+          description: "The unrecognized event kind."
+          constraints: "Exact unknown spelling is retained; tool_exec is excluded after this feature."
+        - name: "Fields"
+          type: "json.RawMessage"
+          description: "The existing untouched raw payload fields."
+          constraints: "Semantics and storage remain unchanged."
+      relationships:
+        - target: "TypedEvent"
+          type: "many-to-one"
+          description: "UnknownEvent continues to implement TypedEvent for genuinely unknown kinds."
+
+api_contracts:
+  endpoints:
+    - method: "Go API"
+      path: "ToolExec"
+      description: "Exported typed event value returned when an exact tool_exec event is decoded."
+      request:
+        content_type: "application/json"
+        body_schema: "Existing Event with Kind tool_exec and Fields containing string session_id, call_id, and name."
+      response:
+        success_code: 200
+        body_schema: "*ToolExec with exported SessionID, CallID, and Name string fields."
+      errors:
+        - code: 400
+          description: "Existing Event.Decode error behavior for malformed canonical field types; unchanged by this feature."
+    - method: "Go API"
+      path: "decodeTypedEvent"
+      description: "Existing private conversion from Event to TypedEvent, extended only for the exact tool_exec kind."
+      request:
+        content_type: "in-process Go value"
+        body_schema: "Event containing Kind and raw Fields."
+      response:
+        success_code: 200
+        body_schema: "*ToolExec for tool_exec; existing peer types for tool_start, tool_input_delta, and tool_done; UnknownEvent for genuinely unknown kinds."
+      errors:
+        - code: 400
+          description: "Existing JSON decoding error for a recognized event whose field types cannot be decoded."
+
+project_structure:
+  documentation:
+    - path: "README.md"
+      description: "Add ToolExec to the existing typed stream event list so the exported addition is discoverable."
+    - path: "specs/071-add-tool-exec/plan.yaml"
+      description: "This implementation design and validation contract."
+  source_code:
+    - path: "session.go"
+      description: "Add the exported ToolExec struct and typedEvent marker beside the current tool event family, plus the exact decodeTypedEvent switch case."
+    - path: "protocol/protocol.go"
+      description: "No planned implementation change; tool_exec is already a known raw event and UnknownEvent semantics remain authoritative."
+  tests:
+    - path: "typed_api_test.go"
+      description: "Add focused table-driven typed decoding tests for all four tool event peers, exact and empty ToolExec values, and genuinely unknown or near-match kinds."
+    - path: "protocol/protocol_test.go"
+      description: "Add focused protocol decoding coverage that tool_exec is a RawEvent with preserved session_id, call_id, and name fields while a synthetic unknown remains UnknownEvent."
+
+implementation_phases:
+  - phase: 1
+    name: "Write focused decoding tests first"
+    goal: "Make the complete additive contract and compatibility boundary executable before changing the typed decoder."
+    deliverables:
+      - "Add table-driven typed API cases for tool_start, tool_input_delta, tool_exec, and tool_done with concrete type and value assertions."
+      - "Assert distinct ToolExec session_id, call_id, and name values and a separate valid empty-string fixture are preserved exactly."
+      - "Assert a genuinely unknown kind and tool_exec near-matches remain UnknownEvent with existing fields retained."
+      - "Add protocol coverage proving exact tool_exec decodes as RawEvent with all three fields and a synthetic unknown kind remains protocol.UnknownEvent."
+      - "Run the focused tests to confirm the new ToolExec typed case fails before implementation while existing compatibility cases remain stable."
+  - phase: 2
+    name: "Add the minimal ToolExec typed contract"
+    goal: "Expose and decode ToolExec through the established typed event family without changing the raw layer or unrelated behavior."
+    dependencies:
+      - "Phase 1"
+    deliverables:
+      - "Add ToolExec with exported SessionID, CallID, and Name string fields and canonical JSON tags beside ToolInputDelta and ToolDone."
+      - "Implement the existing typedEvent marker on ToolExec."
+      - "Add the exact tool_exec branch to decodeTypedEvent using Event.Decode."
+      - "Make no changes to protocol knownEvents, Event, RawEvent, UnknownEvent, Client, Turn, lifecycle, launch, Locus, provider, or platform code."
+      - "Run focused root and protocol package tests after implementation."
+  - phase: 3
+    name: "Validate compatibility and hand off"
+    goal: "Prove the additive change passes the repository contract and stop at the worker-orchestrator boundary."
+    dependencies:
+      - "Phase 2"
+    deliverables:
+      - "Run gofmt on changed Go files and rerun the focused typed API and protocol tests."
+      - "Run go test ./... -count=1 and git diff --check; race testing is unnecessary because no concurrency or lifecycle path changes."
+      - "Inspect the final diff to confirm only the planned exported type, exact mapping, and focused tests changed."
+      - "For implementation handoff, stage only explicit scoped files, commit on the assigned branch, verify the worktree is clean, and report validation and risk without merging, pushing, mutating Beads, or managing worktrees."
+
+risks:
+  - id: "RISK-001"
+    risk: "ToolExec could be added at the raw protocol layer instead of the typed layer, changing an established API boundary."
+    likelihood: "low"
+    impact: "medium"
+    mitigation: "Leave protocol.go unchanged and test that tool_exec remains an existing RawEvent before typed conversion."
+  - id: "RISK-002"
+    risk: "A broad or shape-based decoder condition could classify near-match or unrelated kinds as ToolExec."
+    likelihood: "low"
+    impact: "medium"
+    mitigation: "Use one exact switch case and test unknown and near-match spellings remain UnknownEvent."
+  - id: "RISK-003"
+    risk: "Field names could mirror ServerEvent id rather than the canonical harness call_id contract."
+    likelihood: "low"
+    impact: "medium"
+    mitigation: "Use CallID with json tag call_id and assert three distinct canonical values in both protocol and typed tests."
+
+open_questions:
+  - question: "No blocking design questions remain for task generation."
+    context: "The canonical Rust contract, translation mapping, existing Go tool event family, raw protocol classification, and validation commands are all explicit."
+    proposed_resolution: "Proceed to /autospec.tasks with the three phases and file boundaries in this plan."
+
+_meta:
+  version: "1.0.0"
+  generator: "autospec"
+  generator_version: "autospec dev"
+  created: "2026-08-11T05:13:23Z"
+  artifact_type: "plan"

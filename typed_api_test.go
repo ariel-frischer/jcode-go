@@ -138,6 +138,129 @@ func TestTypedSessionAndEventSurface(t *testing.T) {
 	}
 }
 
+func TestDecodeTypedToolEvents(t *testing.T) {
+	tests := []struct {
+		name   string
+		kind   string
+		fields string
+		check  func(*testing.T, TypedEvent)
+	}{
+		{
+			name:   "tool start",
+			kind:   "tool_start",
+			fields: `{"session_id":"session_start","call_id":"call_start","name":"read"}`,
+			check: func(t *testing.T, event TypedEvent) {
+				value, ok := event.(*ToolStart)
+				if !ok || value.SessionID != "session_start" || value.CallID != "call_start" || value.Name != "read" {
+					t.Fatalf("event=%#v, want *ToolStart with exact fields", event)
+				}
+			},
+		},
+		{
+			name:   "tool input delta",
+			kind:   "tool_input_delta",
+			fields: `{"session_id":"session_input","call_id":"call_input","delta":"{\"path\":"}`,
+			check: func(t *testing.T, event TypedEvent) {
+				value, ok := event.(*ToolInputDelta)
+				if !ok || value.SessionID != "session_input" || value.CallID != "call_input" || value.Delta != `{"path":` {
+					t.Fatalf("event=%#v, want *ToolInputDelta with exact fields", event)
+				}
+			},
+		},
+		{
+			name:   "tool exec",
+			kind:   "tool_exec",
+			fields: `{"session_id":"session_exec","call_id":"call_exec","name":"bash"}`,
+			check: func(t *testing.T, event TypedEvent) {
+				value, ok := event.(*ToolExec)
+				if !ok || value.SessionID != "session_exec" || value.CallID != "call_exec" || value.Name != "bash" {
+					t.Fatalf("event=%#v, want *ToolExec with exact fields", event)
+				}
+			},
+		},
+		{
+			name:   "tool exec empty values",
+			kind:   "tool_exec",
+			fields: `{"session_id":"","call_id":"","name":""}`,
+			check: func(t *testing.T, event TypedEvent) {
+				value, ok := event.(*ToolExec)
+				if !ok || value.SessionID != "" || value.CallID != "" || value.Name != "" {
+					t.Fatalf("event=%#v, want *ToolExec preserving empty fields", event)
+				}
+			},
+		},
+		{
+			name:   "tool exec omitted fields",
+			kind:   "tool_exec",
+			fields: `{}`,
+			check: func(t *testing.T, event TypedEvent) {
+				value, ok := event.(*ToolExec)
+				if !ok || value.SessionID != "" || value.CallID != "" || value.Name != "" {
+					t.Fatalf("event=%#v, want *ToolExec preserving omitted-field zero values", event)
+				}
+			},
+		},
+		{
+			name:   "tool exec extra fields",
+			kind:   "tool_exec",
+			fields: `{"session_id":"session_exec","call_id":"call_exec","name":"bash","future":true}`,
+			check: func(t *testing.T, event TypedEvent) {
+				value, ok := event.(*ToolExec)
+				if !ok || value.SessionID != "session_exec" || value.CallID != "call_exec" || value.Name != "bash" {
+					t.Fatalf("event=%#v, want *ToolExec ignoring extra fields", event)
+				}
+			},
+		},
+		{
+			name:   "tool done",
+			kind:   "tool_done",
+			fields: `{"session_id":"session_done","call_id":"call_done","name":"write","output":"ok"}`,
+			check: func(t *testing.T, event TypedEvent) {
+				value, ok := event.(*ToolDone)
+				if !ok || value.SessionID != "session_done" || value.CallID != "call_done" || value.Name != "write" || value.Output != "ok" {
+					t.Fatalf("event=%#v, want *ToolDone with exact fields", event)
+				}
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			event, err := decodeTypedEvent(Event{Kind: test.kind, Fields: json.RawMessage(test.fields)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			test.check(t, event)
+		})
+	}
+}
+
+func TestDecodeTypedEventPreservesUnknownKinds(t *testing.T) {
+	for _, kind := range []string{"future_event", "tool-exec", "ToolExec"} {
+		t.Run(kind, func(t *testing.T) {
+			fields := json.RawMessage(`{"session_id":"session_unknown","call_id":"call_unknown","name":"bash","future":true}`)
+			event, err := decodeTypedEvent(Event{Kind: kind, Fields: fields})
+			if err != nil {
+				t.Fatal(err)
+			}
+			value, ok := event.(UnknownEvent)
+			if !ok || value.Kind != kind || string(value.Fields) != string(fields) {
+				t.Fatalf("event=%#v, want UnknownEvent preserving kind and fields", event)
+			}
+		})
+	}
+}
+
+func TestDecodeTypedToolExecRejectsMalformedFields(t *testing.T) {
+	event, err := decodeTypedEvent(Event{
+		Kind:   "tool_exec",
+		Fields: json.RawMessage(`{"session_id":7,"call_id":"call_exec","name":"bash"}`),
+	})
+	if err == nil || event != nil {
+		t.Fatalf("event=%#v err=%v, want recognized tool_exec decode error", event, err)
+	}
+}
+
 func TestTypedEventStreamSurfacesHarnessError(t *testing.T) {
 	clientSide, serverSide := transport.NewPipePair()
 	server := transport.NewFakeServer(serverSide)
