@@ -66,6 +66,32 @@ func TestHandshakeAndErrorClassification(t *testing.T) {
 	}
 }
 
+func TestToolExecRawEventContract(t *testing.T) {
+	frame, err := DecodeServerFrame([]byte(`{"v":1,"ev":"tool_exec","session_id":"session_exec","call_id":"call_exec","name":"bash"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, ok := frame.Event.(RawEvent)
+	if !ok || event.Kind != "tool_exec" {
+		t.Fatalf("event=%#v, want tool_exec RawEvent", frame.Event)
+	}
+	fieldsJSON, ok := FieldsJSON(event)
+	if !ok {
+		t.Fatal("tool_exec RawEvent fields unavailable")
+	}
+	var fields struct {
+		SessionID string `json:"session_id"`
+		CallID    string `json:"call_id"`
+		Name      string `json:"name"`
+	}
+	if err := json.Unmarshal(fieldsJSON, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if fields.SessionID != "session_exec" || fields.CallID != "call_exec" || fields.Name != "bash" {
+		t.Fatalf("fields=%+v, want exact canonical tool_exec values", fields)
+	}
+}
+
 func TestAPIVersionCompatibilityMatrix(t *testing.T) {
 	for _, tc := range []struct {
 		version int

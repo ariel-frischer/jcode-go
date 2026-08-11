@@ -210,7 +210,7 @@ The raw request path remains available when an application needs a request or ev
 
 `Request` waits for the correlated reply or `ctx.Done()`. Each request also has a 30-second SDK deadline by default, preventing a bridge or daemon that accepts a connection but never replies from hanging a caller indefinitely. Set `Options.RequestTimeout` to a positive duration to override that bound. Cancellation removes the pending request locally, but it does not necessarily cancel work already accepted by the server. For an owned turn, use `Turn.Cancel`; raw protocol callers may still send `cancel` directly.
 
-[`examples/streaming`](examples/streaming) demonstrates a long-lived service. For a typed stream, use `session.Events(ctx)` and switch on `*TextDelta`, `*ToolStart`, `*TokenUsage`, `*PermissionRequest`, and `*TurnDone`. The lower-level `Subscription` API remains useful when a service wants raw event fields:
+[`examples/streaming`](examples/streaming) demonstrates a long-lived service. For a typed stream, use `session.Events(ctx)` and switch on `*TextDelta`, `*ToolStart`, `*ToolExec`, `*TokenUsage`, `*PermissionRequest`, and `*TurnDone`. The lower-level `Subscription` API remains useful when a service wants raw event fields:
 
 
 ```go

@@ -1,0 +1,266 @@
+tasks:
+    branch: "agent/jcode-go-by7-tool-exec"
+    created: "2026-08-10"
+    spec_path: "specs/071-add-tool-exec/spec.yaml"
+    plan_path: "specs/071-add-tool-exec/plan.yaml"
+summary:
+    total_tasks: 14
+    total_phases: 5
+    parallel_opportunities: 4
+    estimated_complexity: "low"
+phases:
+    - number: 1
+      title: "Setup"
+      purpose: "Confirm the authoritative worktree, inspect the existing typed-event family, and preserve the narrow additive scope."
+      tasks:
+        - id: "T001"
+          title: "Confirm the assigned branch and worker boundary from AGENTS.md"
+          status: "Completed"
+          type: "setup"
+          parallel: false
+          story_id: null
+          file_path: "AGENTS.md"
+          dependencies: []
+          acceptance_criteria:
+            - "Verify the current branch is agent/jcode-go-by7-tool-exec in the assigned worktree; do not create or switch branches."
+            - "Record git status --short --branch and preserve unrelated changes and the prepared specs/071-add-tool-exec artifacts."
+            - "Keep merge, push, Bead mutation, provider mutation, worktree management, and cleanup outside the worker scope."
+        - id: "T002"
+          title: "Inspect the existing typed and raw event boundaries in session.go"
+          status: "Completed"
+          type: "setup"
+          parallel: false
+          story_id: null
+          file_path: "session.go"
+          dependencies: ["T001"]
+          acceptance_criteria:
+            - "Inspect session.go, typed_api_test.go, protocol/protocol.go, and protocol/protocol_test.go before editing."
+            - "Confirm ToolStart, ToolInputDelta, and ToolDone use exported structs, private typedEvent markers, and exact decodeTypedEvent switch cases."
+            - "Confirm protocol.knownEvents already contains tool_exec and that genuinely unknown kinds currently decode to protocol.UnknownEvent."
+            - "Do not plan or make changes to raw protocol APIs, lifecycle ownership, Locus, providers, platform code, or unrelated events."
+    - number: 2
+      title: "Foundational - Baseline Compatibility"
+      purpose: "Establish a clean test baseline before writing the ToolExec contract tests or production code."
+      tasks:
+        - id: "T003"
+          title: "Run the baseline focused and full Go tests from go.mod"
+          status: "Completed"
+          type: "test"
+          parallel: false
+          story_id: null
+          file_path: "go.mod"
+          dependencies: ["T002"]
+          acceptance_criteria:
+            - "Run the existing focused root-package and protocol-package tests with -count=1 before modifying Go files."
+            - "Run go test ./... -count=1 and record the baseline result."
+            - "If a baseline failure exists, distinguish it from feature work before continuing; do not weaken or skip existing tests."
+    - number: 3
+      title: "User Story 1 - Receive typed tool execution events"
+      purpose: "Expose exact tool_exec values through one minimal exported ToolExec typed event."
+      story_reference: "US-001"
+      independent_test: "Decode representative and empty-value tool_exec events and verify the concrete *ToolExec type plus exact SessionID, CallID, and Name strings."
+      tasks:
+        - id: "T004"
+          title: "Add red typed tool-event decoding tests in typed_api_test.go"
+          status: "Completed"
+          type: "test"
+          parallel: true
+          story_id: "US-001"
+          file_path: "typed_api_test.go"
+          dependencies: ["T003"]
+          acceptance_criteria:
+            - "Add focused table-driven coverage for exact tool_start, tool_input_delta, tool_exec, and tool_done kinds through decodeTypedEvent."
+            - "Assert every recognized kind returns its corresponding concrete pointer type rather than UnknownEvent."
+            - "For tool_exec, use distinct synthetic session_id, call_id, and name values and assert exact preservation in exported string fields."
+            - "Add a valid tool_exec fixture with empty strings and assert all three values remain empty without defaults or reinterpretation."
+            - "Run the focused test and confirm the tool_exec case is red only because ToolExec typed decoding is not yet implemented."
+        - id: "T005"
+          title: "Add raw tool_exec value-preservation coverage in protocol/protocol_test.go"
+          status: "Completed"
+          type: "test"
+          parallel: true
+          story_id: "US-001"
+          file_path: "protocol/protocol_test.go"
+          dependencies: ["T003"]
+          acceptance_criteria:
+            - "Decode an exact tool_exec server frame containing distinct session_id, call_id, and name strings."
+            - "Assert the protocol result remains RawEvent, not a new protocol-specific ToolExec type."
+            - "Use FieldsJSON or equivalent existing access to decode the raw fields and assert all three canonical values are preserved exactly."
+            - "Run the focused protocol test and require it to pass before production changes, proving no protocol.knownEvents edit is needed."
+        - id: "T006"
+          title: "Add the exported ToolExec contract and exact decoder case in session.go"
+          status: "Completed"
+          type: "implementation"
+          parallel: false
+          story_id: "US-001"
+          file_path: "session.go"
+          dependencies: ["T004", "T005"]
+          acceptance_criteria:
+            - "Define exported ToolExec beside the existing tool-event family with exactly SessionID, CallID, and Name string fields."
+            - "Tag the fields with canonical JSON names session_id, call_id, and name and add the private typedEvent marker method."
+            - "Add only the exact tool_exec case beside tool_start, tool_input_delta, and tool_done in decodeTypedEvent, using the existing Event.Decode path."
+            - "Do not change protocol/protocol.go, raw APIs, malformed-event behavior, lifecycle code, Locus, providers, or unrelated typed events."
+            - "Run gofmt on session.go after the surgical change."
+        - id: "T007"
+          title: "Run focused ToolExec typed and protocol tests from go.mod"
+          status: "Completed"
+          type: "test"
+          parallel: false
+          story_id: "US-001"
+          file_path: "go.mod"
+          dependencies: ["T006"]
+          acceptance_criteria:
+            - "Run the focused root-package typed tool-event test and protocol tool_exec test with -count=1."
+            - "All four recognized tool lifecycle kinds return their expected concrete types."
+            - "Both distinct and empty ToolExec fixtures preserve SessionID, CallID, and Name exactly, and raw tool_exec remains protocol.RawEvent."
+    - number: 4
+      title: "User Story 2 - Retain safe handling of unknown event kinds"
+      purpose: "Prove that recognizing exact tool_exec does not broaden or weaken fail-closed UnknownEvent behavior."
+      story_reference: "US-002"
+      independent_test: "Decode synthetic unknown and tool_exec near-match kinds and verify they remain UnknownEvent while exact tool_exec remains typed."
+      tasks:
+        - id: "T008"
+          title: "Add typed unknown-kind and near-match regression tests in typed_api_test.go"
+          status: "Completed"
+          type: "test"
+          parallel: true
+          story_id: "US-002"
+          file_path: "typed_api_test.go"
+          dependencies: ["T007"]
+          acceptance_criteria:
+            - "Add a genuinely unknown event fixture and assert decodeTypedEvent returns the existing jcode.UnknownEvent value with its exact Kind and Fields retained."
+            - "Add spelling or casing near-matches for tool_exec and assert they remain UnknownEvent even when their fields resemble ToolExec."
+            - "Assert exact tool_exec in the same focused coverage returns *ToolExec rather than UnknownEvent."
+            - "Do not change UnknownEvent shape, marker behavior, field retention, or classification semantics."
+        - id: "T009"
+          title: "Add raw unknown-kind compatibility coverage in protocol/protocol_test.go"
+          status: "Completed"
+          type: "test"
+          parallel: true
+          story_id: "US-002"
+          file_path: "protocol/protocol_test.go"
+          dependencies: ["T007"]
+          acceptance_criteria:
+            - "Decode a synthetic genuinely unknown server event and assert it remains protocol.UnknownEvent with the exact kind and raw fields retained."
+            - "Contrast the unknown fixture with exact tool_exec, which must remain protocol.RawEvent under the existing known-event table."
+            - "Do not edit protocol/protocol.go or broaden known-event matching by field shape, prefix, spelling variant, or casing."
+        - id: "T010"
+          title: "Run focused exact-kind and UnknownEvent compatibility tests from go.mod"
+          status: "Completed"
+          type: "test"
+          parallel: false
+          story_id: "US-002"
+          file_path: "go.mod"
+          dependencies: ["T008", "T009"]
+          acceptance_criteria:
+            - "Run the focused root-package and protocol-package exact-kind compatibility tests with -count=1."
+            - "Exact tool_exec decodes to *ToolExec at the typed layer and RawEvent at the raw layer."
+            - "Every genuinely unknown or near-match fixture remains the appropriate existing UnknownEvent with retained kind and fields."
+    - number: 5
+      title: "Polish & Cross-Cutting Concerns"
+      purpose: "Format, validate, inspect, commit, and hand off the additive change within the worker boundary."
+      tasks:
+        - id: "T011"
+          title: "Format the explicit changed Go files from session.go"
+          status: "Completed"
+          type: "refactor"
+          parallel: false
+          story_id: null
+          file_path: "session.go"
+          dependencies: ["T010"]
+          acceptance_criteria:
+            - "Run gofmt -w on session.go, typed_api_test.go, and protocol/protocol_test.go only."
+            - "Run gofmt -d on the same explicit files and require no remaining formatting diff."
+            - "Do not reformat or rewrite unrelated files."
+        - id: "T012"
+          title: "Run full repository and artifact validation from go.mod"
+          status: "Completed"
+          type: "test"
+          parallel: false
+          story_id: null
+          file_path: "go.mod"
+          dependencies: ["T011"]
+          acceptance_criteria:
+            - "Run go test ./... -count=1 and require every package to pass; race testing is not required because no concurrency or lifecycle path changes."
+            - "Run autospec artifact specs/071-add-tool-exec/tasks.yaml and require format validation to pass."
+            - "Run git diff --check, git diff --stat, and git status --short --branch, then inspect the complete diff."
+            - "Confirm the implementation diff is limited to session.go, typed_api_test.go, protocol/protocol_test.go, README.md, and the completed specs/071-add-tool-exec Autospec artifacts."
+            - "Confirm no raw API, protocol known-event table, lifecycle, Locus, provider, platform, or unrelated event changes are present."
+        - id: "T013"
+          title: "Stage explicit ToolExec files and create one scoped commit from session.go"
+          status: "Completed"
+          type: "refactor"
+          parallel: false
+          story_id: null
+          file_path: "session.go"
+          dependencies: ["T012"]
+          acceptance_criteria:
+            - "Stage only session.go, typed_api_test.go, protocol/protocol_test.go, README.md, and specs/071-add-tool-exec after validation passes."
+            - "Do not use git add ., git add -A, stash, reset, rebase, amend, squash, force-push, or stage unrelated changes."
+            - "Create one scoped commit such as feat: add typed ToolExec event on the assigned branch."
+            - "Do not merge, push, mutate Beads, manage worktrees, or perform orchestrator-owned actions."
+        - id: "T014"
+          title: "Verify the scoped branch and report the worker handoff from the repository root"
+          status: "Completed"
+          type: "test"
+          parallel: false
+          story_id: null
+          file_path: "."
+          dependencies: ["T013"]
+          acceptance_criteria:
+            - "Run git status --short --branch, git diff --check, and git diff --cached --check after the scoped commit."
+            - "Verify no staged, unstaged, or untracked scoped changes remain after the commit."
+            - "Report the commit, explicit files, focused and full validation results, low-risk additive blast radius, and any follow-up."
+            - "Stop at the worker-orchestrator boundary without merging, pushing, changing Beads, or cleaning the worktree."
+dependencies:
+    user_story_order:
+        - story_id: "US-001"
+          depends_on: []
+          blocks: ["US-002"]
+        - story_id: "US-002"
+          depends_on: ["US-001"]
+          blocks: []
+    phase_order:
+        - phase: 1
+          blocks: [2]
+        - phase: 2
+          blocks: [3]
+        - phase: 3
+          blocks: [4]
+        - phase: 4
+          blocks: [5]
+        - phase: 5
+          blocks: []
+parallel_execution:
+    - phase: 3
+      parallel_groups:
+        - tasks: ["T004", "T005"]
+          rationale: "The typed red test and raw protocol regression test edit distinct test files and share only the completed baseline dependency."
+    - phase: 4
+      parallel_groups:
+        - tasks: ["T008", "T009"]
+          rationale: "Typed-layer and raw-layer unknown-kind compatibility tests edit distinct files after ToolExec behavior is complete."
+implementation_strategy:
+    mvp_scope:
+        phases: [1, 2, 3]
+        description: "Setup, baseline compatibility, and the complete additive ToolExec typed contract with focused typed and raw protocol coverage."
+        validation: "Run focused root and protocol tests proving exact *ToolExec decoding, all three value mappings, empty-string preservation, peer tool-event mappings, and unchanged raw RawEvent classification."
+    incremental_delivery:
+        - milestone: "Baseline Ready"
+          phases: [1, 2]
+          deliverable: "The authoritative worktree, existing event boundaries, and pre-change test baseline are confirmed."
+        - milestone: "ToolExec MVP Complete"
+          phases: [1, 2, 3]
+          deliverable: "Consumers can decode exact tool_exec events into the exported three-string ToolExec value without raw protocol changes."
+        - milestone: "Compatibility Complete"
+          phases: [1, 2, 3, 4]
+          deliverable: "Exact-kind and near-match tests prove genuinely unknown events retain existing fail-closed behavior at both typed and raw layers."
+        - milestone: "Validated Worker Handoff"
+          phases: [1, 2, 3, 4, 5]
+          deliverable: "Scoped formatting, full tests, artifact validation, diff inspection, explicit commit, and clean worker handoff are complete."
+_meta:
+    version: "1.0.0"
+    generator: "autospec"
+    generator_version: "autospec dev"
+    created: "2026-08-11T05:15:56Z"
+    artifact_type: "tasks"

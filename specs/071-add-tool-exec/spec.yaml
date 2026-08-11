@@ -1,0 +1,135 @@
+feature:
+  branch: "agent/jcode-go-by7-tool-exec"
+  created: "2026-08-10"
+  status: "Completed"
+  input: "Add the minimum additive exported ToolExec typed event contract to jcode-go. Canonical Jcode harness ApiEvent::ToolExec fields are session_id, call_id, and name, all strings, as defined in /home/ari/repos/jcode/crates/jcode-harness-api/src/events.rs and translated from ServerEvent::ToolExec id/name in translate.rs. Decode event kind tool_exec exactly alongside ToolStart, ToolInputDelta, and ToolDone. Add focused typed API/protocol tests for value decoding and preserve fail-closed UnknownEvent behavior for genuinely unknown kinds. Do not change raw protocol APIs, lifecycle ownership, Locus, providers, or unknown-event semantics. The assigned branch agent/jcode-go-by7-tool-exec is already the authoritative feature branch; do not create or switch branches."
+
+user_stories:
+  - id: "US-001"
+    title: "Receive typed tool execution events"
+    priority: "P1"
+    as_a: "jcode-go SDK consumer"
+    i_want: "recognized tool execution events to expose their session, call, and tool-name values through an exported typed event"
+    so_that: "I can handle tool execution without inspecting raw protocol payloads"
+    why_this_priority: "The typed event contract is the required additive SDK capability."
+    independent_test: "Decode a representative tool_exec event and verify its concrete type and all three field values."
+    acceptance_scenarios:
+      - given: "A protocol event with kind tool_exec and string session_id, call_id, and name values"
+        when: "The SDK decodes the event through its typed event path"
+        then: "The result is a ToolExec event containing the exact three supplied values."
+      - given: "A consumer receives the decoded ToolExec event"
+        when: "The consumer inspects its exported fields"
+        then: "The session identifier, call identifier, and tool name are directly available as strings."
+
+  - id: "US-002"
+    title: "Retain safe handling of unknown event kinds"
+    priority: "P1"
+    as_a: "jcode-go SDK consumer"
+    i_want: "genuinely unknown event kinds to remain represented by UnknownEvent"
+    so_that: "adding ToolExec support does not broaden or weaken the existing unknown-event contract"
+    why_this_priority: "Forward-compatible fail-closed behavior must remain stable for existing consumers."
+    independent_test: "Decode a synthetic unrecognized kind and verify that it remains UnknownEvent while tool_exec does not."
+    acceptance_scenarios:
+      - given: "A protocol event whose kind is not recognized by the typed decoder"
+        when: "The SDK decodes the event"
+        then: "The result remains UnknownEvent under the existing semantics."
+      - given: "Equivalent typed-decoding coverage for ToolStart, ToolInputDelta, ToolDone, and ToolExec"
+        when: "Each recognized event kind is decoded"
+        then: "Each event produces its corresponding typed value rather than UnknownEvent."
+
+requirements:
+  functional:
+    - id: "FR-001"
+      description: "MUST expose a minimal additive ToolExec typed event contract with session identifier, call identifier, and tool name, each represented as a string."
+      acceptance_criteria: "Public API inspection and a focused value test confirm the exported ToolExec contract contains exactly the required session_id, call_id, and name information as strings."
+    - id: "FR-002"
+      description: "MUST recognize the exact event kind tool_exec through the same typed decoding path as ToolStart, ToolInputDelta, and ToolDone."
+      acceptance_criteria: "A tool_exec fixture decodes to ToolExec and all four recognized tool-event kinds have focused typed-decoding coverage."
+    - id: "FR-003"
+      description: "MUST preserve the exact session_id, call_id, and name values supplied by a valid tool_exec event."
+      acceptance_criteria: "A fixture with distinct non-empty values produces a ToolExec value whose three fields exactly match the fixture."
+    - id: "FR-004"
+      description: "MUST preserve fail-closed UnknownEvent behavior for every event kind that is not an exact case-sensitive match for a recognized kind, regardless of payload shape."
+      acceptance_criteria: "Synthetic unrecognized and tool_exec near-match kinds still decode to UnknownEvent with their exact kind and fields retained, while exact tool_exec no longer does."
+    - id: "FR-005"
+      description: "MUST leave existing raw protocol APIs, lifecycle ownership, provider behavior, Locus integration, and all unrelated event semantics unchanged; exact tool_exec remains a known raw event before typed interpretation, and genuinely unknown raw kinds remain unknown."
+      acceptance_criteria: "Protocol tests show exact tool_exec remains RawEvent with its fields retained and an unrecognized kind remains protocol.UnknownEvent, while existing SDK tests pass without public signature changes outside the additive ToolExec contract."
+    - id: "FR-006"
+      description: "MUST retain the existing JSON decoding semantics for recognized tool_exec payloads: omitted string fields decode as empty strings, extra fields are ignored, and non-string canonical fields return the existing decode error."
+      acceptance_criteria: "Focused tests verify omitted and extra fields follow standard existing decoding behavior and a non-string canonical field returns an error rather than UnknownEvent."
+  non_functional:
+    - id: "NFR-001"
+      category: "reliability"
+      description: "Recognized and genuinely unknown event kinds remain deterministically distinguishable."
+      measurable_target: "100% of focused ToolExec and unknown-kind fixtures produce the expected typed result."
+    - id: "NFR-002"
+      category: "code_quality"
+      description: "The public addition remains minimal and consistent with the established typed tool-event family."
+      measurable_target: "One additive event contract and one exact kind mapping are introduced, with no unrelated public API changes."
+
+success_criteria:
+  measurable_outcomes:
+    - id: "SC-001"
+      description: "SDK consumers can identify a tool execution and retrieve its session, call, and tool-name values without inspecting an untyped payload."
+      metric: "Required ToolExec values available after typed decoding"
+      target: "3 of 3 values are preserved exactly in every valid focused fixture."
+    - id: "SC-002"
+      description: "Existing consumers retain predictable handling of event kinds not recognized by the SDK."
+      metric: "Unknown-kind compatibility scenarios"
+      target: "100% remain represented by UnknownEvent."
+    - id: "SC-003"
+      description: "The additive capability introduces no regression in existing SDK behavior."
+      metric: "Existing and focused compatibility checks"
+      target: "100% pass with no unrelated public contract changes."
+
+key_entities:
+  - name: "ToolExec event"
+    description: "A typed notification that a named tool call is being executed within a session."
+    attributes:
+      - "session_id string"
+      - "call_id string"
+      - "name string"
+  - name: "Unknown event"
+    description: "The existing fail-closed representation of an event kind not recognized by the typed decoder."
+    attributes:
+      - "unrecognized event kind"
+      - "existing unknown-event semantics"
+
+edge_cases:
+  - scenario: "A valid tool_exec event contains empty string values."
+    expected_behavior: "The decoder preserves the values exactly; it does not invent defaults or reinterpret the event kind."
+  - scenario: "An event kind resembles tool_exec but differs in spelling or casing."
+    expected_behavior: "Only the exact tool_exec kind is recognized; other genuinely unknown kinds retain UnknownEvent behavior."
+  - scenario: "A genuinely unknown event contains fields resembling ToolExec."
+    expected_behavior: "Field shape alone does not classify it as ToolExec; the existing unknown-kind behavior remains authoritative."
+  - scenario: "An exact tool_exec event omits one or more canonical fields."
+    expected_behavior: "The recognized event uses the existing JSON decoder, so omitted string fields retain their Go zero value without changing event classification."
+  - scenario: "An exact tool_exec event includes additional fields."
+    expected_behavior: "The recognized event uses the existing JSON decoder, so additional fields are ignored without changing the three-field public ToolExec contract."
+  - scenario: "An exact tool_exec event supplies a non-string canonical field."
+    expected_behavior: "The recognized event returns the existing JSON decode error and is not reclassified as UnknownEvent."
+
+assumptions:
+  - "The canonical harness event contract is authoritative: session_id, call_id, and name are strings."
+  - "ToolExec is a peer of the existing ToolStart, ToolInputDelta, and ToolDone typed events."
+  - "Existing decoding behavior for malformed recognized events remains unchanged because the request changes only recognition of a valid canonical event."
+
+constraints:
+  - "The change is additive and minimal."
+  - "The exact recognized protocol kind is tool_exec."
+  - "Raw protocol APIs and lifecycle ownership contracts must remain unchanged."
+  - "The assigned agent/jcode-go-by7-tool-exec branch and worktree remain authoritative; no branch creation or switching is permitted."
+
+out_of_scope:
+  - "Changes to raw protocol APIs or protocol v1 behavior."
+  - "Changes to lifecycle or instance ownership."
+  - "Changes to Locus, providers, or provider configuration."
+  - "Changes to unknown-event semantics beyond recognizing tool_exec as a known kind."
+  - "Additional tool lifecycle events or speculative fields."
+
+_meta:
+  version: "1.0.0"
+  generator: "autospec"
+  generator_version: "autospec dev"
+  created: "2026-08-11T05:12:05Z"
+  artifact_type: "spec"
