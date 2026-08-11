@@ -242,6 +242,13 @@ type ReasoningDelta struct {
 
 func (ReasoningDelta) typedEvent() {}
 
+type ReasoningDone struct {
+	SessionID    string  `json:"session_id"`
+	DurationSecs float64 `json:"duration_secs,omitempty"`
+}
+
+func (ReasoningDone) typedEvent() {}
+
 type ToolStart struct {
 	SessionID string `json:"session_id"`
 	CallID    string `json:"call_id"`
@@ -314,6 +321,8 @@ func decodeTypedEvent(event Event) (TypedEvent, error) {
 		value = &TextDelta{}
 	case "reasoning_delta":
 		value = &ReasoningDelta{}
+	case "reasoning_done":
+		value = &ReasoningDone{}
 	case "tool_start":
 		value = &ToolStart{}
 	case "tool_input_delta":

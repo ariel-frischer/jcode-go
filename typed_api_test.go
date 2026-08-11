@@ -65,6 +65,12 @@ func TestTypedSessionAndEventSurface(t *testing.T) {
 			serverDone <- err
 			return
 		}
+		if err := server.Send(mustEventFrame(t, "reasoning_done", map[string]any{
+			"session_id": "session_test", "duration_secs": 13.5,
+		})); err != nil {
+			serverDone <- err
+			return
+		}
 		if err := server.Send(mustEventFrame(t, "text_delta", map[string]any{"session_id": "session_test", "text": "hello"})); err != nil {
 			serverDone <- err
 			return
@@ -95,6 +101,7 @@ func TestTypedSessionAndEventSurface(t *testing.T) {
 		t.Fatal(err)
 	}
 	var text *TextDelta
+	var reasoningDone *ReasoningDone
 	var turnDone *TurnDone
 	var sawUnknown bool
 	for turnDone == nil {
@@ -106,6 +113,8 @@ func TestTypedSessionAndEventSurface(t *testing.T) {
 		switch value := event.(type) {
 		case UnknownEvent:
 			sawUnknown = true
+		case *ReasoningDone:
+			reasoningDone = value
 		case *TextDelta:
 			text = value
 		case *TurnDone:
@@ -114,6 +123,9 @@ func TestTypedSessionAndEventSurface(t *testing.T) {
 	}
 	if text == nil || text.Text != "hello" || text.SessionID != session.ID {
 		t.Fatalf("text=%+v, want hello for session %q", text, session.ID)
+	}
+	if reasoningDone == nil || reasoningDone.SessionID != session.ID || reasoningDone.DurationSecs != 13.5 {
+		t.Fatalf("reasoning_done=%+v, want duration 13.5 for session %q", reasoningDone, session.ID)
 	}
 	if !sawUnknown {
 		t.Fatal("stream did not preserve and skip the unknown message_accepted event")
