@@ -1,6 +1,6 @@
 # Linux Jcode Go SDK and Locus stability plan
 
-Status: approved for orchestration and implementation
+Status: completed on 2026-08-12
 
 Architecture owners:
 
@@ -9,6 +9,19 @@ Architecture owners:
 - The Jcode agent always runs in the explicit task worktree supplied by the orchestrator. SDK workers are started from that project directory, not from the Locus repository.
 - Swarm is not used for `jcode-go` implementation unless the coordinator can bind the worker to the exact `jcode-go` worktree and approved OpenAI OAuth route.
 - Linux is the only supported supervision target in this program. Windows parity is out of scope.
+
+## Completion evidence
+
+The program completed with both epics closed: `jcode-go-70h` and `locus-3qth`. The final evidence is:
+
+- Direct-exec Locus lifecycle: `run-8d92ac55956e` completed implementation, canonical validation, integration, provider completion, push, and cleanup using native OpenAI OAuth, `gpt-5.6-luna`, and `xhigh`.
+- Native SDK Locus lifecycle: `run-d9cfa6242fd5` completed the equivalent lifecycle from the same disposable base, task, route, and workflow.
+- Blocked SDK stop: `run-1d9586d85d9a` reached durable and archived `STOPPED` using Jcode `v0.75.187-dev` at commit `2631193cc` and SHA-256 `64872b4985b1e002d4b0d5ee7d730f0595273434ce0cb9924b58000e0a828a66`.
+- Before stop, the private runtime owned bridge PID `717578`, server PID `717614`, isolated blocker process group `717730`, and descendant PID `717733`. After bounded stop, all were absent and the socket plus private runtime directory were removed without manual cleanup.
+- The final Jcode repair is landed on `dev` at `2631193cc`. It isolates ordinary foreground commands into owned sessions, kills their complete process group on cancellation, and preserves intentional timeout promotion.
+- `locus-3qth.5` and `locus-3qth` are closed. Their downstream gate is released, and `locus-x4nu` is dependency-ready.
+
+Durable acceptance artifacts are stored under `$JCODE_SCRATCH_DIR/locus-paired-acceptance-1f5ee5d4`, `$JCODE_SCRATCH_DIR/locus-paired-acceptance-f210e8b0`, and `$JCODE_SCRATCH_DIR/locus-sdk-stop-2631193cc`.
 
 ## Evidence and problem statement
 
@@ -60,7 +73,7 @@ Epic: `locus-3qth` — Stabilize Locus native Jcode SDK execution
 | `locus-3qth.4` | P1 | Classify typed jcode-go outcomes into Locus handlers | External: `jcode-go-70h.4` |
 | `locus-3qth.5` | P1 | Complete paired SDK and direct-exec lifecycle acceptance | `locus-3qth.1`, `.2`, `.3`, `.4` |
 
-`locus-3qth.5` blocks the existing unattended five-Bead trial `locus-x4nu`. The epic is coordinated with existing Beads `locus-bzrr`, `locus-7v54`, `locus-hxzt`, `locus-drae`, `locus-3taw`, and `locus-qk3o` rather than duplicating their scopes.
+`locus-3qth.5` previously blocked the unattended five-Bead trial `locus-x4nu`. Paired lifecycle and blocked-stop acceptance are complete, so `locus-x4nu` is now dependency-ready. The epic remains coordinated with existing Beads `locus-bzrr`, `locus-7v54`, `locus-hxzt`, `locus-drae`, `locus-3taw`, and `locus-qk3o` rather than duplicating their scopes.
 
 ## Execution DAG
 
@@ -195,3 +208,5 @@ The program is complete only when:
 5. `locus stop` interrupts an SDK stage and records a truthful terminal lifecycle.
 6. The paired acceptance Bead succeeds completely in both modes.
 7. The five-Bead unattended Locus trial is unblocked.
+
+All seven criteria were satisfied on 2026-08-12. The unattended five-Bead trial remains separate follow-on work owned by `locus-x4nu`.
