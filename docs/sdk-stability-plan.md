@@ -12,16 +12,17 @@ Architecture owners:
 
 ## Completion evidence
 
-The program completed with both epics closed: `jcode-go-70h` and `locus-3qth`. The final evidence is:
+The program completed with both epics closed: `jcode-go-70h` and `locus-3qth`. An archive re-audit found that the original paired runs had integrated and closed their providers but had not actually requested push or cleanup. The final corrected evidence is:
 
-- Direct-exec Locus lifecycle: `run-8d92ac55956e` completed implementation, canonical validation, integration, provider completion, push, and cleanup using native OpenAI OAuth, `gpt-5.6-luna`, and `xhigh`.
-- Native SDK Locus lifecycle: `run-d9cfa6242fd5` completed the equivalent lifecycle from the same disposable base, task, route, and workflow.
+- Direct-exec Locus lifecycle: `run-77d1876535a7` completed from base `1b3fd5d` using native OpenAI OAuth, `gpt-5.6-luna`, and `xhigh`. It produced commit `51c462c`, passed 4/4 canonical checks, integrated into disposable `main`, closed the provider, recorded a successful cleanup operation, and removed the task worktree. The root orchestrator then pushed `main` and verified local and remote at `51c462c`.
+- Native SDK Locus lifecycle: `run-10a55b8c970f` completed from the identical base, task, route, model, effort, and workflow. It produced commit `95a31fd`, passed 4/4 canonical checks, integrated into disposable `main`, closed the provider, recorded successful cleanup, and removed the task worktree. The root orchestrator pushed `main` and verified local and remote at `95a31fd`.
+- The corrected direct-exec run first exposed runner-owned `.locus/stages` files blocking cleanup. Locus repair `locus-qczq` landed on `dev` at `0fc7e611`, preserves user-created collision files fail-closed, and was accepted by both corrected lifecycle runs.
 - Blocked SDK stop: `run-1d9586d85d9a` reached durable and archived `STOPPED` using Jcode `v0.75.187-dev` at commit `2631193cc` and SHA-256 `64872b4985b1e002d4b0d5ee7d730f0595273434ce0cb9924b58000e0a828a66`.
 - Before stop, the private runtime owned bridge PID `717578`, server PID `717614`, isolated blocker process group `717730`, and descendant PID `717733`. After bounded stop, all were absent and the socket plus private runtime directory were removed without manual cleanup.
 - The final Jcode repair is landed on `dev` at `2631193cc`. It isolates ordinary foreground commands into owned sessions, kills their complete process group on cancellation, and preserves intentional timeout promotion.
 - `locus-3qth.5` and `locus-3qth` are closed. Their downstream gate is released, and `locus-x4nu` is dependency-ready.
 
-Durable acceptance artifacts are stored under `$JCODE_SCRATCH_DIR/locus-paired-acceptance-1f5ee5d4`, `$JCODE_SCRATCH_DIR/locus-paired-acceptance-f210e8b0`, and `$JCODE_SCRATCH_DIR/locus-sdk-stop-2631193cc`.
+Corrected paired acceptance artifacts are stored under `$JCODE_SCRATCH_DIR/sdk-stability-corrected-lifecycle/exec2` and `$JCODE_SCRATCH_DIR/sdk-stability-corrected-lifecycle/sdk`. Blocked-stop artifacts are stored under `$JCODE_SCRATCH_DIR/locus-sdk-stop-2631193cc`.
 
 ## Evidence and problem statement
 
