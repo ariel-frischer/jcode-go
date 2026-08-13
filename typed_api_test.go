@@ -307,8 +307,9 @@ func TestTypedEventStreamSurfacesHarnessError(t *testing.T) {
 			return
 		}
 		serverDone <- server.Send(mustEventFrame(t, "error", map[string]any{
-			"code":    "provider_error",
-			"message": "provider exploded",
+			"code":          "provider_error",
+			"message":       "provider exploded",
+			"provider_code": "temporarily_unavailable",
 		}))
 	}()
 
@@ -336,7 +337,7 @@ func TestTypedEventStreamSurfacesHarnessError(t *testing.T) {
 	if !errors.As(streamErr, &eventErr) {
 		t.Fatalf("stream error=%v, want EventError", streamErr)
 	}
-	if eventErr.Code != "provider_error" || eventErr.Message != "provider exploded" {
+	if eventErr.Code != "provider_error" || eventErr.Message != "provider exploded" || eventErr.ProviderCode != "temporarily_unavailable" {
 		t.Fatalf("event error=%+v, want provider_error/provider exploded", eventErr)
 	}
 	if err := <-serverDone; err != nil {

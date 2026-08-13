@@ -720,8 +720,9 @@ func TestTurnProviderErrorTerminatesAcceptanceAndWait(t *testing.T) {
 	go func() {
 		_, _ = receiveTurnRequest(server)
 		_ = server.Send(mustEventFrame(t, "error", map[string]any{
-			"code":    "provider_error",
-			"message": "sensitive provider detail",
+			"code":          "provider_error",
+			"message":       "sensitive provider detail",
+			"provider_code": "temporarily_unavailable",
 		}))
 	}()
 	turn, err := (Session{client: client, ID: "session_turn"}).StartTurn(context.Background(), "prompt", SendOptions{})
@@ -732,7 +733,7 @@ func TestTurnProviderErrorTerminatesAcceptanceAndWait(t *testing.T) {
 	defer cancel()
 	acceptErr := turn.Accepted(ctx)
 	var eventErr EventError
-	if !errors.As(acceptErr, &eventErr) || eventErr.Code != "provider_error" || eventErr.Message != "" {
+	if !errors.As(acceptErr, &eventErr) || eventErr.Code != "provider_error" || eventErr.Message != "" || eventErr.ProviderCode != "temporarily_unavailable" {
 		t.Fatalf("Accepted error=%v, want provider EventError", acceptErr)
 	}
 	if strings.Contains(acceptErr.Error(), "sensitive provider detail") {

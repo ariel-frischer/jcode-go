@@ -89,8 +89,9 @@ type OK struct{}
 func (OK) event() {}
 
 type Error struct {
-	Code    string
-	Message string
+	Code         string
+	Message      string
+	ProviderCode string
 }
 
 func (Error) event() {}
@@ -121,7 +122,7 @@ var knownEvents = map[string]struct{}{
 	"tool_exec": {}, "tool_done": {}, "token_usage": {}, "turn_done": {}, "background_progress": {},
 	"message_accepted": {}, "permission_request": {}, "session_status": {}, "model_info": {}, "models": {},
 	"runtime_info": {}, "credential_updated": {}, "file_content": {}, "files": {}, "text_matches": {},
-	"file_status": {}, "compacted": {}, "session_renamed": {},
+	"file_status": {}, "compacted": {}, "connection_phase": {}, "session_renamed": {},
 }
 
 func IsKnownEvent(kind string) bool { _, ok := knownEvents[kind]; return ok }
@@ -171,13 +172,18 @@ func DecodeServerFrame(data []byte) (ServerFrame, error) {
 		frame.Event = OK{}
 	case "error":
 		var value struct {
-			Code    string `json:"code"`
-			Message string `json:"message"`
+			Code         string `json:"code"`
+			Message      string `json:"message"`
+			ProviderCode string `json:"provider_code"`
 		}
 		if err := json.Unmarshal(data, &value); err != nil {
 			return ServerFrame{}, fmt.Errorf("decode error event: %w", err)
 		}
-		frame.Event = Error{Code: value.Code, Message: value.Message}
+		frame.Event = Error{
+			Code:         value.Code,
+			Message:      value.Message,
+			ProviderCode: value.ProviderCode,
+		}
 	default:
 		if IsKnownEvent(kind) {
 			frame.Event = RawEvent{Kind: kind, Fields: payload}

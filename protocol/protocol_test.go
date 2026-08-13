@@ -57,11 +57,11 @@ func TestHandshakeAndErrorClassification(t *testing.T) {
 	if !ok || hello.Version != 1 || hello.Server != "h" || len(hello.Capabilities) != 1 {
 		t.Fatalf("hello=%#v", frame.Event)
 	}
-	frame, err = DecodeServerFrame([]byte(`{"v":1,"reply_to":2,"ev":"error","code":"unknown_request","message":"nope"}`))
+	frame, err = DecodeServerFrame([]byte(`{"v":1,"reply_to":2,"ev":"error","code":"internal","message":"private provider detail","provider_code":"temporarily_unavailable"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, ok := frame.Event.(Error); !ok || got.Code != "unknown_request" {
+	if got, ok := frame.Event.(Error); !ok || got.Code != "internal" || got.ProviderCode != "temporarily_unavailable" || got.Message != "private provider detail" {
 		t.Fatalf("error=%#v", frame.Event)
 	}
 }

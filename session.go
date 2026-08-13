@@ -33,8 +33,9 @@ type SendOptions struct {
 // turn. It preserves the protocol code and message for callers that need to
 // classify provider failures without inspecting raw protocol frames.
 type EventError struct {
-	Code    string
-	Message string
+	Code         string
+	Message      string
+	ProviderCode string
 }
 
 func (e EventError) Error() string {
@@ -219,7 +220,11 @@ func (s *TypedEventStream) Next(ctx context.Context) (TypedEvent, error) {
 		return nil, err
 	}
 	if value, ok := event.Frame.Event.(protocol.Error); ok {
-		return nil, EventError{Code: value.Code, Message: value.Message}
+		return nil, EventError{
+			Code:         value.Code,
+			Message:      value.Message,
+			ProviderCode: value.ProviderCode,
+		}
 	}
 	return decodeTypedEvent(event)
 }

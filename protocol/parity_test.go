@@ -75,7 +75,7 @@ func requestTags() []string {
 }
 
 func eventTags() []string {
-	return []string{"hello_ok", "ok", "error", "sessions", "attached", "history", "pong", "text_delta", "reasoning_delta", "reasoning_done", "tool_start", "tool_input_delta", "tool_exec", "tool_done", "token_usage", "turn_done", "background_progress", "message_accepted", "permission_request", "session_status", "model_info", "models", "runtime_info", "credential_updated", "file_content", "files", "text_matches", "file_status", "compacted", "session_renamed"}
+	return []string{"hello_ok", "ok", "error", "sessions", "attached", "history", "pong", "text_delta", "reasoning_delta", "reasoning_done", "tool_start", "tool_input_delta", "tool_exec", "tool_done", "token_usage", "turn_done", "background_progress", "message_accepted", "permission_request", "session_status", "model_info", "models", "runtime_info", "connection_phase", "credential_updated", "file_content", "files", "text_matches", "file_status", "compacted", "session_renamed"}
 }
 
 func eventKindForTest(event Event) string {

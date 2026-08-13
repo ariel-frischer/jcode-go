@@ -234,7 +234,7 @@ func (t *Turn) dispatch() {
 			t.client.emit(Observation{Kind: "turn_first_event"})
 		}
 		if value, ok := event.Frame.Event.(protocol.Error); ok {
-			cause := EventError{Code: value.Code}
+			cause := EventError{Code: value.Code, ProviderCode: value.ProviderCode}
 			wrapped := fmt.Errorf("turn failed: %w", cause)
 			t.finishTerminal(TurnResult{Kind: TurnResultProviderError, Err: wrapped})
 			return
