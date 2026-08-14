@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
+	"strings"
 
 	"github.com/ariel-frischer/jcode-go/protocol"
 )
@@ -233,6 +235,83 @@ func (s *TypedEventStream) Close() { s.subscription.Close() }
 
 type TypedEvent interface{ typedEvent() }
 
+// EventSemanticClass is the closed handling policy for an owned-turn event.
+type EventSemanticClass string
+
+const (
+	EventSemanticClassContentProgress   EventSemanticClass = "content_progress"
+	EventSemanticClassAdvisoryLifecycle EventSemanticClass = "advisory_lifecycle"
+	EventSemanticClassTerminal          EventSemanticClass = "terminal"
+	EventSemanticClassPermission        EventSemanticClass = "permission"
+	EventSemanticClassToolEffect        EventSemanticClass = "tool_effect"
+	// Short aliases keep handler switches readable while the prefixed names
+	// remain unambiguous in generated documentation and downstream code.
+	SemanticClassContentProgress   = EventSemanticClassContentProgress
+	SemanticClassAdvisoryLifecycle = EventSemanticClassAdvisoryLifecycle
+	SemanticClassTerminal          = EventSemanticClassTerminal
+	SemanticClassPermission        = EventSemanticClassPermission
+	SemanticClassToolEffect        = EventSemanticClassToolEffect
+)
+
+const maxCompatibilityDiagnosticBytes = 256
+const maxCompatibilityIdentifierBytes = 96
+
+// CompatibilityError is a payload-free, bounded failure for an unsupported or
+// semantically unclassified owned-turn event.
+type CompatibilityError struct {
+	Kind      string
+	EventType string
+}
+
+func (e *CompatibilityError) Error() string {
+	if e == nil {
+		return "unsupported_typed_event"
+	}
+	return boundedCompatibilityMessage(e.Kind, e.EventType)
+}
+
+func (*CompatibilityError) Unwrap() error { return ErrProtocolFailure }
+
+func newCompatibilityError(kind, eventType, _ string) *CompatibilityError {
+	return &CompatibilityError{
+		Kind:      sanitizeCompatibilityIdentifier(kind, "unknown_kind"),
+		EventType: sanitizeCompatibilityIdentifier(eventType, "unknown_type"),
+	}
+}
+
+func boundedCompatibilityMessage(kind, eventType string) string {
+	message := "unsupported_typed_event: kind=" + sanitizeCompatibilityIdentifier(kind, "unknown_kind") +
+		" type=" + sanitizeCompatibilityIdentifier(eventType, "unknown_type")
+	return truncateCompatibilityUTF8(message, maxCompatibilityDiagnosticBytes)
+}
+
+func sanitizeCompatibilityIdentifier(raw, fallback string) string {
+	var builder strings.Builder
+	for _, r := range raw {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.' {
+			builder.WriteRune(r)
+		} else {
+			builder.WriteByte('_')
+		}
+	}
+	value := builder.String()
+	if value == "" || strings.Trim(value, "_") == "" {
+		value = fallback
+	}
+	return truncateCompatibilityUTF8(value, maxCompatibilityIdentifierBytes)
+}
+
+func truncateCompatibilityUTF8(value string, maxBytes int) string {
+	if len(value) <= maxBytes {
+		return value
+	}
+	end := maxBytes
+	for end > 0 && (value[end]&0xc0) == 0x80 {
+		end--
+	}
+	return value[:end]
+}
+
 type TextDelta struct {
 	SessionID string `json:"session_id"`
 	Text      string `json:"text"`
@@ -312,6 +391,37 @@ type PermissionRequest struct {
 
 func (PermissionRequest) typedEvent() {}
 
+type BackgroundProgress struct {
+	SessionID string  `json:"session_id"`
+	TaskID    string  `json:"task_id"`
+	Label     string  `json:"label"`
+	Percent   float64 `json:"percent,omitempty"`
+	Summary   string  `json:"summary"`
+	Done      bool    `json:"done,omitempty"`
+}
+
+func (BackgroundProgress) typedEvent() {}
+
+type MessageAccepted struct {
+	SessionID string `json:"session_id"`
+}
+
+func (MessageAccepted) typedEvent() {}
+
+type SessionStatus struct {
+	SessionID string `json:"session_id"`
+	Status    string `json:"status"`
+}
+
+func (SessionStatus) typedEvent() {}
+
+type ConnectionPhase struct {
+	SessionID string `json:"session_id"`
+	Phase     string `json:"phase"`
+}
+
+func (ConnectionPhase) typedEvent() {}
+
 type ModelInfo struct {
 	SessionID string `json:"session_id"`
 	Provider  string `json:"provider,omitempty"`
@@ -326,6 +436,36 @@ type UnknownEvent struct {
 }
 
 func (UnknownEvent) typedEvent() {}
+
+// SemanticClassOf returns the reviewed class for a known concrete event.
+// Unknown, nil, and unclassified values deliberately return false.
+func SemanticClassOf(event TypedEvent) (EventSemanticClass, bool) {
+	switch event.(type) {
+	case TextDelta, *TextDelta, ReasoningDelta, *ReasoningDelta,
+		ToolStart, *ToolStart, ToolInputDelta, *ToolInputDelta,
+		ToolDone, *ToolDone, TokenUsage, *TokenUsage:
+		return EventSemanticClassContentProgress, true
+	case ReasoningDone, *ReasoningDone, BackgroundProgress, *BackgroundProgress,
+		MessageAccepted, *MessageAccepted, SessionStatus, *SessionStatus,
+		ConnectionPhase, *ConnectionPhase, ModelInfo, *ModelInfo:
+		return EventSemanticClassAdvisoryLifecycle, true
+	case TurnDone, *TurnDone:
+		return EventSemanticClassTerminal, true
+	case PermissionRequest, *PermissionRequest:
+		return EventSemanticClassPermission, true
+	case ToolExec, *ToolExec:
+		return EventSemanticClassToolEffect, true
+	default:
+		return "", false
+	}
+}
+
+func typedEventType(event TypedEvent) string {
+	if event == nil {
+		return "unknown_type"
+	}
+	return reflect.TypeOf(event).String()
+}
 
 func decodeTypedEvent(event Event) (TypedEvent, error) {
 	var value TypedEvent
@@ -348,15 +488,24 @@ func decodeTypedEvent(event Event) (TypedEvent, error) {
 		value = &TokenUsage{}
 	case "turn_done":
 		value = &TurnDone{}
+	case "background_progress":
+		value = &BackgroundProgress{}
 	case "permission_request":
 		value = &PermissionRequest{}
+	case "session_status":
+		value = &SessionStatus{}
+	case "connection_phase":
+		value = &ConnectionPhase{}
 	case "model_info":
 		value = &ModelInfo{}
 	default:
 		return UnknownEvent{Kind: event.Kind, Fields: event.Fields}, nil
 	}
+	if len(event.Fields) == 0 || string(event.Fields) == "null" || event.Fields[0] != '{' {
+		return nil, newCompatibilityError(event.Kind, typedEventType(value), "")
+	}
 	if err := event.Decode(value); err != nil {
-		return nil, err
+		return nil, newCompatibilityError(event.Kind, typedEventType(value), "")
 	}
 	return value, nil
 }

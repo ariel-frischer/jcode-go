@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,11 +15,24 @@ import (
 )
 
 type observationRecorder struct {
+	mu           sync.Mutex
 	observations []Observation
 }
 
+type unclassifiedTypedEvent struct{}
+
+func (unclassifiedTypedEvent) typedEvent() {}
+
 func (r *observationRecorder) Observe(observation Observation) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.observations = append(r.observations, observation)
+}
+
+func (r *observationRecorder) snapshot() []Observation {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]Observation(nil), r.observations...)
 }
 
 func TestTypedSessionAndEventSurface(t *testing.T) {
@@ -248,6 +264,85 @@ func TestDecodeTypedEventPreservesUnknownKinds(t *testing.T) {
 				t.Fatalf("event=%#v, want UnknownEvent preserving kind and fields", event)
 			}
 		})
+	}
+}
+
+func TestFailedRunConnectionPhaseFixtureReproducesUnsupportedTypedEvent(t *testing.T) {
+	const payload = `{"session_id":"session_fixture","phase":"fixture phase","prompt":"SYNTHETIC_PROMPT_MUST_NOT_BE_RETAINED","tool_arguments":"SYNTHETIC_TOOL_ARGUMENTS_MUST_NOT_BE_RETAINED"}`
+	event, err := decodeTypedEvent(Event{
+		Kind:   "connection_phase",
+		Fields: json.RawMessage(payload),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, ok := event.(*ConnectionPhase)
+	if !ok || value.SessionID != "session_fixture" || value.Phase != "fixture phase" {
+		t.Fatalf("event=%#v, want the reviewed *ConnectionPhase classification", event)
+	}
+	if strings.Contains(fmt.Sprintf("%#v", value), "SYNTHETIC_") {
+		t.Fatal("fixture retained payload fields")
+	}
+}
+
+func TestTypedEventSemanticClassesAreExplicitAndClosed(t *testing.T) {
+	tests := []struct {
+		name  string
+		event TypedEvent
+		class EventSemanticClass
+	}{
+		{"content", &TextDelta{}, EventSemanticClassContentProgress},
+		{"advisory", &ConnectionPhase{}, EventSemanticClassAdvisoryLifecycle},
+		{"terminal", &TurnDone{}, EventSemanticClassTerminal},
+		{"permission", &PermissionRequest{}, EventSemanticClassPermission},
+		{"tool effect", &ToolExec{}, EventSemanticClassToolEffect},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			class, ok := SemanticClassOf(test.event)
+			if !ok || class != test.class {
+				t.Fatalf("SemanticClassOf(%T)=(%q,%v), want (%q,true)", test.event, class, ok, test.class)
+			}
+		})
+	}
+	for _, event := range []TypedEvent{nil, UnknownEvent{Kind: "future_event"}, &unclassifiedTypedEvent{}} {
+		if class, ok := SemanticClassOf(event); ok || class != "" {
+			t.Fatalf("SemanticClassOf(%T)=(%q,%v), want no classification", event, class, ok)
+		}
+	}
+}
+
+func TestConnectionPhaseDecodesAsConcreteTypedEvent(t *testing.T) {
+	event, err := decodeTypedEvent(Event{Kind: "connection_phase", Fields: json.RawMessage(`{"session_id":"s","phase":"connecting"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, ok := event.(*ConnectionPhase)
+	if !ok || value.SessionID != "s" || value.Phase != "connecting" {
+		t.Fatalf("event=%#v, want *ConnectionPhase with stable fields", event)
+	}
+}
+
+func TestCompatibilityDiagnosticIsBoundedAndPayloadFree(t *testing.T) {
+	err := newCompatibilityError("bad\nkind", "type\u0000with\u0001controls", "SYNTHETIC_PAYLOAD_MUST_NOT_APPEAR")
+	if len([]byte(err.Error())) > maxCompatibilityDiagnosticBytes {
+		t.Fatalf("diagnostic bytes=%d, want <= %d", len([]byte(err.Error())), maxCompatibilityDiagnosticBytes)
+	}
+	if strings.Contains(err.Error(), "SYNTHETIC_PAYLOAD_MUST_NOT_APPEAR") || strings.ContainsAny(err.Error(), "\r\n\x00\x01") {
+		t.Fatalf("diagnostic=%q contains payload or control characters", err)
+	}
+	if !strings.Contains(err.Error(), "kind=bad_kind") || !strings.Contains(err.Error(), "type=type_with_controls") {
+		t.Fatalf("diagnostic=%q lacks sanitized identifiers", err)
+	}
+}
+
+func TestKnownTypedEventWithNilOrNonObjectFieldsFailsClosed(t *testing.T) {
+	for _, fields := range []json.RawMessage{nil, []byte("null"), []byte("[]")} {
+		if _, err := decodeTypedEvent(Event{Kind: "text_delta", Fields: fields}); err == nil {
+			t.Fatalf("fields=%s decoded successfully, want compatibility failure", fields)
+		} else if !strings.Contains(err.Error(), "unsupported_typed_event") {
+			t.Fatalf("fields=%s error=%v, want bounded compatibility failure", fields, err)
+		}
 	}
 }
 

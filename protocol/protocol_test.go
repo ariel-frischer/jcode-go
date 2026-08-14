@@ -48,6 +48,53 @@ func TestFrameRoundTripAndUnknownFields(t *testing.T) {
 	}
 }
 
+func TestEventKindPreservesKnownAndUnknownProvenance(t *testing.T) {
+	known, err := DecodeServerFrame([]byte(`{"v":1,"ev":"connection_phase","session_id":"s","phase":"connecting"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := EventKind(known.Event); got != "connection_phase" {
+		t.Fatalf("known kind=%q, want connection_phase", got)
+	}
+	unknown, err := DecodeServerFrame([]byte(`{"v":1,"ev":"future_event","payload":"SYNTHETIC_PAYLOAD"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := EventKind(unknown.Event); got != "future_event" {
+		t.Fatalf("unknown kind=%q, want future_event", got)
+	}
+	fields, ok := FieldsJSON(unknown.Event)
+	if !ok || !strings.Contains(string(fields), "SYNTHETIC_PAYLOAD") {
+		t.Fatalf("unknown fields=%s, want preserved legacy provenance", fields)
+	}
+
+	raw := &RawEvent{Kind: "pointer_raw"}
+	unknownValue := &UnknownEvent{Kind: "pointer_unknown"}
+	if got := EventKind(&HelloOK{}); got != "hello_ok" {
+		t.Fatalf("pointer hello kind=%q, want hello_ok", got)
+	}
+	if got := EventKind(&OK{}); got != "ok" {
+		t.Fatalf("pointer ok kind=%q, want ok", got)
+	}
+	if got := EventKind(&Error{}); got != "error" {
+		t.Fatalf("pointer error kind=%q, want error", got)
+	}
+	if got := EventKind(raw); got != "pointer_raw" {
+		t.Fatalf("pointer raw kind=%q, want pointer_raw", got)
+	}
+	if got := EventKind(unknownValue); got != "pointer_unknown" {
+		t.Fatalf("pointer unknown kind=%q, want pointer_unknown", got)
+	}
+	var nilRaw *RawEvent
+	var nilUnknown *UnknownEvent
+	if got := EventKind(nilRaw); got != "" {
+		t.Fatalf("nil raw kind=%q, want empty", got)
+	}
+	if got := EventKind(nilUnknown); got != "" {
+		t.Fatalf("nil unknown kind=%q, want empty", got)
+	}
+}
+
 func TestHandshakeAndErrorClassification(t *testing.T) {
 	frame, err := DecodeServerFrame([]byte(`{"v":1,"reply_to":1,"ev":"hello_ok","version":1,"server":"h","capabilities":["events"],"extra":7}`))
 	if err != nil {

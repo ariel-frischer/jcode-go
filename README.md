@@ -205,6 +205,46 @@ if err := json.Unmarshal(fields, &sessions); err != nil {
 }
 ```
 
+## Typed-event semantic handling
+
+Every concrete owned-turn event has exactly one `EventSemanticClass`. Adaptors
+should classify before dispatching and keep the switch exhaustive:
+
+```go
+func handleEvent(event jcode.TypedEvent) error {
+    class, ok := jcode.SemanticClassOf(event)
+    if !ok {
+        return errors.New("unclassified jcode event")
+    }
+    switch class {
+    case jcode.EventSemanticClassContentProgress:
+        // Render text/reasoning deltas, track tool progress, or record usage.
+    case jcode.EventSemanticClassAdvisoryLifecycle:
+        // Turn.Next filters this class. A legacy Session.Events consumer may
+        // inspect it without treating it as terminal or safety-relevant.
+    case jcode.EventSemanticClassTerminal:
+        // Observe the terminal event, then read the immutable Turn.Wait result.
+    case jcode.EventSemanticClassPermission:
+        // Apply an explicit user/application policy before responding.
+    case jcode.EventSemanticClassToolEffect:
+        // Handle the tool effect; do not silently discard it.
+    default:
+        return errors.New("unsupported jcode event class")
+    }
+    return nil
+}
+```
+
+`Turn.Next` publishes content/progress, terminal, permission, and tool-effect
+events in order. It ignores only recognized advisory/lifecycle metadata and
+emits at most one `Observer` observation per turn. The observation contains
+bounded sanitized `EventKind`, `EventType`, and `Disposition` fields; it never
+contains event payloads. Unknown, malformed, nil, and unclassified owned-turn
+input ends the turn as `TurnResultProtocolError` with a payload-free
+`CompatibilityError` no longer than 256 UTF-8 bytes. `Session.Events` remains
+the compatibility seam: additive unknown kinds are represented by
+`UnknownEvent{Kind, Fields}` instead of being silently dropped.
+
 The raw request path remains available when an application needs a request or event added by a newer server:
 
 

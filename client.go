@@ -45,6 +45,11 @@ type Observation struct {
 	Request  string
 	Error    string
 	Attempts int
+	// EventKind, EventType, and Disposition are set only for the bounded
+	// advisory compatibility observation emitted by an owned Turn.
+	EventKind   string
+	EventType   string
+	Disposition string
 	// Outcome is set only for an immutable terminal turn observation.
 	Outcome TurnResultKind
 }
@@ -589,20 +594,7 @@ func (c *Client) readLoop(decoder *protocol.Decoder) {
 }
 
 func eventKind(event protocol.Event) string {
-	switch value := event.(type) {
-	case protocol.HelloOK:
-		return "hello_ok"
-	case protocol.OK:
-		return "ok"
-	case protocol.Error:
-		return "error"
-	case protocol.RawEvent:
-		return value.Kind
-	case protocol.UnknownEvent:
-		return value.Kind
-	default:
-		return ""
-	}
+	return protocol.EventKind(event)
 }
 
 func (c *Client) setState(state State) {

@@ -114,6 +114,94 @@ func TestTurnFastAcceptanceAndOrderedEvents(t *testing.T) {
 	}
 }
 
+func TestTurnIgnoresRepeatedAdvisoryMetadataWithOneBoundedWarning(t *testing.T) {
+	client, server := newTurnTestClient(t, Options{})
+	defer client.Close()
+	defer server.Close()
+	recorder := &observationRecorder{}
+	client.options.Observer = recorder
+
+	go func() {
+		_, _ = receiveTurnRequest(server)
+		for _, frame := range [][]byte{
+			mustEventFrame(t, "message_accepted", map[string]any{"session_id": "session_turn"}),
+			mustEventFrame(t, "connection_phase", map[string]any{"session_id": "session_turn", "phase": "connecting", "secret": "SYNTHETIC_SECRET"}),
+			mustEventFrame(t, "connection_phase", map[string]any{"session_id": "session_turn", "phase": "streaming", "secret": "SYNTHETIC_SECRET"}),
+			mustEventFrame(t, "text_delta", map[string]any{"session_id": "session_turn", "text": "visible"}),
+			mustEventFrame(t, "turn_done", map[string]any{"session_id": "session_turn"}),
+		} {
+			_ = server.Send(frame)
+		}
+	}()
+
+	turn, err := (Session{client: client, ID: "session_turn"}).StartTurn(context.Background(), "prompt", SendOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := turn.Accepted(ctx); err != nil {
+		t.Fatal(err)
+	}
+	event, err := turn.Next(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value, ok := event.(*TextDelta); !ok || value.Text != "visible" {
+		t.Fatalf("event=%#v, want visible text after ignored advisory metadata", event)
+	}
+	if event, err := turn.Next(ctx); err != nil {
+		t.Fatal(err)
+	} else if _, ok := event.(*TurnDone); !ok {
+		t.Fatalf("terminal event=%T, want *TurnDone", event)
+	}
+	if result, err := turn.Wait(ctx); err != nil || result.Kind != TurnResultCompleted {
+		t.Fatalf("result=%+v err=%v, want completed", result, err)
+	}
+
+	var warnings []Observation
+	for _, observation := range recorder.snapshot() {
+		if observation.Kind == "turn_advisory_ignored" {
+			warnings = append(warnings, observation)
+		}
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("advisory warnings=%+v, want exactly one", warnings)
+	}
+	warning := warnings[0]
+	if warning.EventKind != "connection_phase" || warning.EventType != "_jcode.ConnectionPhase" || warning.Disposition != "advisory_lifecycle" {
+		t.Fatalf("warning=%+v, want sanitized advisory identity", warning)
+	}
+	if len([]byte(warning.Error)) > maxCompatibilityDiagnosticBytes || strings.Contains(warning.Error, "SYNTHETIC_SECRET") {
+		t.Fatalf("warning=%q is not bounded and payload-free", warning.Error)
+	}
+}
+
+func TestTurnUnknownEventFailsClosedWithBoundedCompatibilityError(t *testing.T) {
+	client, server := newTurnTestClient(t, Options{})
+	defer client.Close()
+	defer server.Close()
+	go func() {
+		_, _ = receiveTurnRequest(server)
+		_ = server.Send(mustEventFrame(t, "message_accepted", map[string]any{"session_id": "session_turn"}))
+		_ = server.Send(mustEventFrame(t, "future_event", map[string]any{"prompt": "SYNTHETIC_PROMPT", "tool_arguments": "SYNTHETIC_TOOL_ARGS"}))
+		_ = server.Send(mustEventFrame(t, "turn_done", map[string]any{"session_id": "session_turn"}))
+	}()
+	turn, err := (Session{client: client, ID: "session_turn"}).StartTurn(context.Background(), "prompt", SendOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	result, err := turn.Wait(ctx)
+	if err != nil || result.Kind != TurnResultProtocolError || !errors.Is(result.Err, ErrProtocolFailure) {
+		t.Fatalf("result=%+v err=%v, want bounded protocol failure", result, err)
+	}
+	if strings.Contains(result.Err.Error(), "SYNTHETIC_") || len([]byte(result.Err.Error())) > maxCompatibilityDiagnosticBytes {
+		t.Fatalf("error=%q is not bounded and payload-free", result.Err)
+	}
+}
+
 func TestTurnMethodContextsDoNotTerminateLifecycle(t *testing.T) {
 	client, server := newTurnTestClient(t, Options{})
 	defer client.Close()

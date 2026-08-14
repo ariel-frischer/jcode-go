@@ -3,6 +3,8 @@ package protocol
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -68,6 +70,216 @@ func TestProtocolFixtureParity(t *testing.T) {
 			t.Fatalf("%s: decoded %#v", tag, frame.Event)
 		}
 	}
+}
+
+// TestOwnedTurnEventCoverage keeps the public Go event boundary aligned with
+// the exhaustive Rust publication contract. The protocol package cannot
+// import its parent package without creating a production dependency cycle,
+// so this gate checks the canonical source seams directly: Rust's contract
+// match, the Go decoder cases, and the Go semantic-class switch.
+func TestOwnedTurnEventCoverage(t *testing.T) {
+	root := repositoryRoot(t)
+	rustPath := filepath.Join(root, "crates/jcode-harness-api/src/events.rs")
+	goPath := filepath.Join(root, "sdk/go/session.go")
+	rustContracts := rustPublicationContracts(t, rustPath)
+	goSourceBytes, err := os.ReadFile(goPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	goSource := string(goSourceBytes)
+
+	if got, want := len(rustContracts), len(rustEnumVariants(t, rustPath, "ApiEvent")); got != want {
+		t.Fatalf("Rust ApiEvent publication contract covers %d variants, want %d", got, want)
+	}
+	for _, problem := range ownedTurnCoverageErrors(rustContracts, goSource, ownedGoEventCoverage) {
+		t.Error(problem)
+	}
+}
+
+func TestOwnedTurnEventCoverageRejectsControlledGaps(t *testing.T) {
+	root := repositoryRoot(t)
+	rustPath := filepath.Join(root, "crates/jcode-harness-api/src/events.rs")
+	goSourceBytes, err := os.ReadFile(filepath.Join(root, "sdk/go/session.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rustContracts := rustPublicationContracts(t, rustPath)
+	goSource := string(goSourceBytes)
+
+	missing := maps.Clone(ownedGoEventCoverage)
+	delete(missing, "connection_phase")
+	if problems := ownedTurnCoverageErrors(rustContracts, goSource, missing); len(problems) == 0 {
+		t.Fatal("coverage gate accepted an owned event with no Go representation")
+	}
+
+	unclassified := maps.Clone(ownedGoEventCoverage)
+	unclassified["connection_phase"] = ownedEventCoverage{goType: "ConnectionPhase", class: ""}
+	if problems := ownedTurnCoverageErrors(rustContracts, goSource, unclassified); len(problems) == 0 {
+		t.Fatal("coverage gate accepted an owned event with no semantic class")
+	}
+
+	undeclared := maps.Clone(ownedGoEventCoverage)
+	undeclared["synthetic_untyped"] = ownedEventCoverage{goType: "SyntheticUntyped", class: "content_progress"}
+	if problems := ownedTurnCoverageErrors(rustContracts, goSource, undeclared); len(problems) == 0 {
+		t.Fatal("coverage gate accepted an undeclared Go inventory entry")
+	}
+}
+
+type ownedEventCoverage struct {
+	goType string
+	class  string
+}
+
+// Keep this inventory next to the parity gate so a new owned Rust event must
+// receive a reviewed Go representation and class before the test can pass.
+var ownedGoEventCoverage = map[string]ownedEventCoverage{
+	"error":               {goType: "EventError", class: "terminal"},
+	"text_delta":          {goType: "TextDelta", class: "content_progress"},
+	"reasoning_delta":     {goType: "ReasoningDelta", class: "content_progress"},
+	"reasoning_done":      {goType: "ReasoningDone", class: "advisory_lifecycle"},
+	"tool_start":          {goType: "ToolStart", class: "content_progress"},
+	"tool_input_delta":    {goType: "ToolInputDelta", class: "content_progress"},
+	"tool_exec":           {goType: "ToolExec", class: "tool_effect"},
+	"tool_done":           {goType: "ToolDone", class: "content_progress"},
+	"token_usage":         {goType: "TokenUsage", class: "content_progress"},
+	"turn_done":           {goType: "TurnDone", class: "terminal"},
+	"background_progress": {goType: "BackgroundProgress", class: "advisory_lifecycle"},
+	"message_accepted":    {goType: "MessageAccepted", class: "advisory_lifecycle"},
+	"permission_request":  {goType: "PermissionRequest", class: "permission"},
+	"session_status":      {goType: "SessionStatus", class: "advisory_lifecycle"},
+	"connection_phase":    {goType: "ConnectionPhase", class: "advisory_lifecycle"},
+	"model_info":          {goType: "ModelInfo", class: "advisory_lifecycle"},
+}
+
+func ownedTurnCoverageErrors(rustContracts map[string]rustEventContract, goSource string, goCoverage map[string]ownedEventCoverage) []string {
+	var problems []string
+	for kind, contract := range rustContracts {
+		if !IsKnownEvent(kind) && kind != "unknown" {
+			problems = append(problems, fmt.Sprintf("Rust event %q is absent from Go protocol known-event inventory", kind))
+		}
+		if contract.disposition != "owned" {
+			continue
+		}
+		coverage, ok := goCoverage[kind]
+		if !ok {
+			problems = append(problems, fmt.Sprintf("owned Rust event %q has no Go typed/classified coverage", kind))
+			continue
+		}
+		if coverage.class == "" {
+			problems = append(problems, fmt.Sprintf("owned Rust event %q has no semantic class", kind))
+		}
+		if coverage.goType == "EventError" {
+			if !strings.Contains(goSource, "event.Frame.Event.(protocol.Error)") {
+				problems = append(problems, fmt.Sprintf("%s has no typed terminal error path", kind))
+			}
+			continue
+		}
+		if kind == "message_accepted" {
+			if !strings.Contains(goSource, `event.Kind == "message_accepted"`) {
+				problems = append(problems, fmt.Sprintf("%s has no owned-turn acceptance path", kind))
+			}
+		} else {
+			decoderNeedle := fmt.Sprintf("case %q:", kind)
+			decoderStart := strings.Index(goSource, decoderNeedle)
+			if decoderStart < 0 || !strings.Contains(goSource[decoderStart:], "&"+coverage.goType+"{}") {
+				problems = append(problems, fmt.Sprintf("owned Rust event %q is not decoded as *%s", kind, coverage.goType))
+			}
+		}
+		gotClass, count := goSemanticClassForType(goSource, coverage.goType)
+		if count != 1 || gotClass != coverage.class {
+			problems = append(problems, fmt.Sprintf("Go type %s has semantic classes %q (%d matches), want exactly %q", coverage.goType, gotClass, count, coverage.class))
+		}
+	}
+	for kind := range goCoverage {
+		contract, ok := rustContracts[kind]
+		if !ok || contract.disposition != "owned" {
+			problems = append(problems, fmt.Sprintf("Go owned-event inventory contains undeclared/non-owned event %q", kind))
+		}
+	}
+	return problems
+}
+
+type rustEventContract struct {
+	disposition string
+}
+
+func rustPublicationContracts(t *testing.T, path string) map[string]rustEventContract {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(data)
+	start := strings.Index(body, "match self {")
+	if start < 0 {
+		t.Fatalf("publication contract match not found in %s", path)
+	}
+	body = body[start:]
+	if end := strings.Index(body, "\n        }\n    }\n}"); end >= 0 {
+		body = body[:end]
+	}
+	arm := regexp.MustCompile(`(?m)^\s*Self::([A-Za-z0-9_]+)(?:\s*\{[^}]*\})?\s*=>\s*(owned|outside|filtered)\("([^"]+)"`)
+	contracts := make(map[string]rustEventContract)
+	for _, match := range arm.FindAllStringSubmatch(body, -1) {
+		contracts[match[3]] = rustEventContract{disposition: match[2]}
+	}
+	if len(contracts) == 0 {
+		t.Fatalf("no publication contract arms found in %s", path)
+	}
+	return contracts
+}
+
+func rustEnumVariants(t *testing.T, path, name string) []string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(data)
+	start := strings.Index(source, "pub enum "+name+" {")
+	if start < 0 {
+		t.Fatalf("enum %s not found in %s", name, path)
+	}
+	body := source[start:]
+	if end := strings.Index(body, "\n}"); end >= 0 {
+		body = body[:end]
+	}
+	re := regexp.MustCompile(`(?m)^    ([A-Z][A-Za-z0-9]*)\s*[{(,]`)
+	matches := re.FindAllStringSubmatch(body, -1)
+	variants := make([]string, 0, len(matches))
+	for _, match := range matches {
+		variants = append(variants, match[1])
+	}
+	return variants
+}
+
+func goSemanticClassForType(source, typeName string) (string, int) {
+	start := strings.Index(source, "func SemanticClassOf")
+	if start < 0 {
+		return "", 0
+	}
+	body := source[start:]
+	group := regexp.MustCompile(`(?s)case ([^:]+):\s*return EventSemanticClass([A-Za-z]+), true`)
+	count := 0
+	class := ""
+	for _, match := range group.FindAllStringSubmatch(body, -1) {
+		if strings.Contains(match[1], typeName) {
+			count++
+			class = semanticClassValue(match[2])
+		}
+	}
+	return class, count
+}
+
+func semanticClassValue(name string) string {
+	var out strings.Builder
+	for i, r := range name {
+		if i > 0 && r >= 'A' && r <= 'Z' {
+			out.WriteByte('_')
+		}
+		out.WriteRune(r)
+	}
+	return strings.ToLower(out.String())
 }
 
 func requestTags() []string {

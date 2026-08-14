@@ -37,6 +37,48 @@ func TestTurnResultKindsAreStable(t *testing.T) {
 	}
 }
 
+func TestTurnReasoningDoneAndToolExecPreserveTerminalOutcome(t *testing.T) {
+	client, server := newTurnTestClient(t, Options{})
+	defer client.Close()
+	defer server.Close()
+	go func() {
+		_, _ = receiveTurnRequest(server)
+		for _, frame := range [][]byte{
+			mustEventFrame(t, "message_accepted", map[string]any{"session_id": "session_turn"}),
+			mustEventFrame(t, "reasoning_done", map[string]any{"session_id": "session_turn", "duration_secs": 1.25}),
+			mustEventFrame(t, "tool_exec", map[string]any{"session_id": "session_turn", "call_id": "call", "name": "read"}),
+			mustEventFrame(t, "turn_done", map[string]any{"session_id": "session_turn"}),
+		} {
+			_ = server.Send(frame)
+		}
+	}()
+	turn, err := (Session{client: client, ID: "session_turn"}).StartTurn(context.Background(), "prompt", SendOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := turn.Accepted(ctx); err != nil {
+		t.Fatal(err)
+	}
+	event, err := turn.Next(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value, ok := event.(*ToolExec); !ok || value.CallID != "call" || value.Name != "read" {
+		t.Fatalf("event=%#v, want typed ToolExec after reasoning_done", event)
+	}
+	if event, err := turn.Next(ctx); err != nil {
+		t.Fatal(err)
+	} else if _, ok := event.(*TurnDone); !ok {
+		t.Fatalf("terminal event=%T, want *TurnDone", event)
+	}
+	result, err := turn.Wait(ctx)
+	if err != nil || result.Kind != TurnResultCompleted || result.Err != nil {
+		t.Fatalf("result=%+v err=%v, want completed", result, err)
+	}
+}
+
 func TestTurnFirstTerminalResultWinsImmutably(t *testing.T) {
 	client, server := newTurnTestClient(t, Options{})
 	defer client.Close()

@@ -116,6 +116,47 @@ type ServerFrame struct {
 	Event   Event
 }
 
+// EventKind returns the stable wire tag for every protocol event shape. Raw
+// and unknown events retain their original kind so additive protocol-v1 data
+// can be diagnosed without decoding or formatting its fields.
+func EventKind(event Event) string {
+	switch value := event.(type) {
+	case HelloOK:
+		return "hello_ok"
+	case *HelloOK:
+		if value != nil {
+			return "hello_ok"
+		}
+	case OK:
+		return "ok"
+	case *OK:
+		if value != nil {
+			return "ok"
+		}
+	case Error:
+		return "error"
+	case *Error:
+		if value != nil {
+			return "error"
+		}
+	case RawEvent:
+		return value.Kind
+	case *RawEvent:
+		if value != nil {
+			return value.Kind
+		}
+	case UnknownEvent:
+		return value.Kind
+	case *UnknownEvent:
+		if value != nil {
+			return value.Kind
+		}
+	default:
+		return ""
+	}
+	return ""
+}
+
 var knownEvents = map[string]struct{}{
 	"hello_ok": {}, "ok": {}, "error": {}, "sessions": {}, "attached": {}, "history": {}, "pong": {},
 	"text_delta": {}, "reasoning_delta": {}, "reasoning_done": {}, "tool_start": {}, "tool_input_delta": {},

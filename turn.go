@@ -89,10 +89,11 @@ type Turn struct {
 	result       TurnResult
 	terminalDone chan struct{}
 
-	cancelOnce      sync.Once
-	cancelRequested bool
-	cancelErr       error
-	cancelDone      chan struct{}
+	cancelOnce             sync.Once
+	cancelRequested        bool
+	cancelErr              error
+	cancelDone             chan struct{}
+	advisoryWarningEmitted bool
 }
 
 func newTurn(client *Client, sessionID string, subscription *Subscription) *Turn {
@@ -245,6 +246,15 @@ func (t *Turn) dispatch() {
 			t.finishTerminal(TurnResult{Kind: TurnResultProtocolError, Err: protocolTurnError(err)})
 			return
 		}
+		class, classified := SemanticClassOf(typed)
+		if !classified {
+			t.finishTerminal(TurnResult{Kind: TurnResultProtocolError, Err: newCompatibilityError(event.Kind, typedEventType(typed), "")})
+			return
+		}
+		if class == EventSemanticClassAdvisoryLifecycle {
+			t.ignoreAdvisory(event.Kind, typed)
+			continue
+		}
 		terminalEvent := event.Kind == "turn_done"
 		if terminalEvent {
 			t.finishTurnDone(typed)
@@ -255,6 +265,24 @@ func (t *Turn) dispatch() {
 			return
 		}
 	}
+}
+
+func (t *Turn) ignoreAdvisory(kind string, event TypedEvent) {
+	t.mu.Lock()
+	if t.advisoryWarningEmitted {
+		t.mu.Unlock()
+		return
+	}
+	t.advisoryWarningEmitted = true
+	t.mu.Unlock()
+	identity := newCompatibilityError(kind, typedEventType(event), "")
+	t.client.emit(Observation{
+		Kind:        "turn_advisory_ignored",
+		Error:       identity.Error(),
+		EventKind:   identity.Kind,
+		EventType:   identity.EventType,
+		Disposition: string(EventSemanticClassAdvisoryLifecycle),
+	})
 }
 
 func (t *Turn) publishEvent(event TypedEvent) bool {
@@ -483,6 +511,10 @@ func isProtocolError(err error) bool {
 }
 
 func protocolTurnError(err error) error {
+	var compatibility *CompatibilityError
+	if errors.As(err, &compatibility) {
+		return compatibility
+	}
 	causes := []error{ErrProtocolFailure}
 	for _, sentinel := range []error{protocol.ErrMalformedFrame, protocol.ErrInvalidFrame, protocol.ErrFrameTooLarge} {
 		if errors.Is(err, sentinel) {
