@@ -1,0 +1,181 @@
+tasks:
+  branch: "agent/jcode-go-7tf-events"
+  created: "2026-08-22"
+  spec_path: "specs/072-decode-known-events/spec.yaml"
+  plan_path: "specs/072-decode-known-events/plan.yaml"
+
+summary:
+  total_tasks: 7
+  total_phases: 4
+  parallel_opportunities: 2
+  estimated_complexity: "medium"
+
+phases:
+  - number: 1
+    title: "Canonical coverage tests"
+    purpose: "Encode the verified Rust and TypeScript contracts as failing Go tests before implementation."
+    tasks:
+      - id: "T001"
+        title: "Add exhaustive typed decoder fixtures"
+        status: "InProgress"
+        type: "test"
+        parallel: true
+        story_id: "US-001"
+        file_path: "typed_api_test.go"
+        dependencies: []
+        acceptance_criteria:
+          - "Representative fixtures cover side_pane_images, message_accepted, models, runtime_info, credential_updated, file_content, files, text_matches, file_status, compacted, and session_renamed."
+          - "Fixtures verify nested and optional canonical values."
+      - id: "T002"
+        title: "Extend raw and owned-event parity inventory"
+        status: "Pending"
+        type: "test"
+        parallel: true
+        story_id: "US-002"
+        file_path: "protocol/parity_test.go"
+        dependencies: []
+        acceptance_criteria:
+          - "side_pane_images is required by raw known-event parity."
+          - "side_pane_images is required as owned content_progress coverage."
+          - "OutsideOwnedTurn reply events are not added to the owned inventory."
+  - number: 2
+    title: "Typed event implementation"
+    purpose: "Add the minimal canonical public types and exact decoder mappings."
+    tasks:
+      - id: "T003"
+        title: "Add canonical event payload structs"
+        status: "Pending"
+        type: "implementation"
+        parallel: false
+        story_id: "US-001"
+        file_path: "session.go"
+        dependencies:
+          - "T001"
+        acceptance_criteria:
+          - "All scoped wire fields have exported Go representations."
+          - "Optional title and file metadata preserve absence."
+          - "ModelInfo exposes ReasoningEffort additively."
+      - id: "T004"
+        title: "Decode all scoped known event kinds"
+        status: "Pending"
+        type: "implementation"
+        parallel: false
+        story_id: "US-001"
+        file_path: "session.go"
+        dependencies:
+          - "T003"
+        acceptance_criteria:
+          - "Every scoped exact kind maps to its concrete pointer type."
+          - "message_accepted maps to MessageAccepted."
+          - "Unknown future kinds still return UnknownEvent."
+      - id: "T005"
+        title: "Align raw known inventory and semantic classes"
+        status: "Pending"
+        type: "implementation"
+        parallel: false
+        story_id: "US-002"
+        file_path: "protocol/protocol.go, session.go"
+        dependencies:
+          - "T002"
+          - "T003"
+        acceptance_criteria:
+          - "side_pane_images is protocol-known and content_progress."
+          - "Requested outside-turn event types remain semantically unclassified."
+          - "Existing EventError and Turn terminal paths are unchanged."
+  - number: 3
+    title: "Compatibility documentation"
+    purpose: "Explain typed known-event behavior and the owned/outside distinction."
+    tasks:
+      - id: "T006"
+        title: "Update typed-event compatibility documentation"
+        status: "Pending"
+        type: "documentation"
+        parallel: false
+        story_id: "US-002"
+        file_path: "README.md"
+        dependencies:
+          - "T004"
+          - "T005"
+        acceptance_criteria:
+          - "README distinguishes typed known events, terminal errors, outside-turn reply types, and genuinely unknown future events."
+  - number: 4
+    title: "Validation and handoff"
+    purpose: "Prove the scoped change and repository compatibility."
+    tasks:
+      - id: "T007"
+        title: "Run focused, race, full, formatting, and cleanliness validation"
+        status: "Pending"
+        type: "test"
+        parallel: false
+        story_id: null
+        file_path: "repository"
+        dependencies:
+          - "T006"
+        acceptance_criteria:
+          - "Focused decoder, parity, provider redaction, and Turn acceptance tests pass."
+          - "Race-enabled lifecycle package tests pass where applicable."
+          - "go test ./... -count=1 and Linux private-runtime acceptance pass."
+          - "gofmt, git diff --check, clean scoped commit, and clean worktree are verified."
+
+dependencies:
+  user_story_order:
+    - story_id: "US-001"
+      depends_on: []
+      blocks:
+        - "US-002"
+    - story_id: "US-002"
+      depends_on:
+        - "US-001"
+      blocks: []
+  phase_order:
+    - phase: 1
+      blocks:
+        - 2
+    - phase: 2
+      blocks:
+        - 3
+    - phase: 3
+      blocks:
+        - 4
+    - phase: 4
+      blocks: []
+
+parallel_execution:
+  - phase: 1
+    parallel_groups:
+      - tasks:
+          - "T001"
+          - "T002"
+        rationale: "Typed decoder fixtures and protocol parity inventory are in separate packages/files."
+
+implementation_strategy:
+  mvp_scope:
+    phases:
+      - 1
+      - 2
+    description: "Canonical tests plus complete typed event decoding and class alignment."
+    validation: "Focused typed API and protocol parity tests."
+  incremental_delivery:
+    - milestone: "Coverage contract frozen"
+      phases:
+        - 1
+      deliverable: "Failing tests express canonical fields and ownership."
+    - milestone: "Known events typed"
+      phases:
+        - 1
+        - 2
+      deliverable: "All scoped known events decode concretely."
+    - milestone: "Handoff ready"
+      phases:
+        - 1
+        - 2
+        - 3
+        - 4
+      deliverable: "Documented, fully validated, committed worktree change."
+
+_meta:
+  version: "1.0.0"
+  generator: "autospec"
+  generator_version: "manual-stage-after-native-sdk-command-unsupported"
+  created: "2026-08-22T22:54:00Z"
+  artifact_type: "tasks"
