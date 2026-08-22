@@ -141,6 +141,7 @@ var ownedGoEventCoverage = map[string]ownedEventCoverage{
 	"tool_input_delta":    {goType: "ToolInputDelta", class: "content_progress"},
 	"tool_exec":           {goType: "ToolExec", class: "tool_effect"},
 	"tool_done":           {goType: "ToolDone", class: "content_progress"},
+	"side_pane_images":    {goType: "SidePaneImages", class: "content_progress"},
 	"token_usage":         {goType: "TokenUsage", class: "content_progress"},
 	"turn_done":           {goType: "TurnDone", class: "terminal"},
 	"background_progress": {goType: "BackgroundProgress", class: "advisory_lifecycle"},
@@ -287,7 +288,7 @@ func requestTags() []string {
 }
 
 func eventTags() []string {
-	return []string{"hello_ok", "ok", "error", "sessions", "attached", "history", "pong", "text_delta", "reasoning_delta", "reasoning_done", "tool_start", "tool_input_delta", "tool_exec", "tool_done", "token_usage", "turn_done", "background_progress", "message_accepted", "permission_request", "session_status", "model_info", "models", "runtime_info", "connection_phase", "credential_updated", "file_content", "files", "text_matches", "file_status", "compacted", "session_renamed"}
+	return []string{"hello_ok", "ok", "error", "sessions", "attached", "history", "pong", "text_delta", "reasoning_delta", "reasoning_done", "tool_start", "tool_input_delta", "tool_exec", "tool_done", "side_pane_images", "token_usage", "turn_done", "background_progress", "message_accepted", "permission_request", "session_status", "model_info", "models", "runtime_info", "connection_phase", "credential_updated", "file_content", "files", "text_matches", "file_status", "compacted", "session_renamed"}
 }
 
 func eventKindForTest(event Event) string {

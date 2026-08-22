@@ -119,7 +119,7 @@ func TestTypedSessionAndEventSurface(t *testing.T) {
 	var text *TextDelta
 	var reasoningDone *ReasoningDone
 	var turnDone *TurnDone
-	var sawUnknown bool
+	var messageAccepted *MessageAccepted
 	for turnDone == nil {
 		var event TypedEvent
 		event, err = stream.Next(ctx)
@@ -127,8 +127,8 @@ func TestTypedSessionAndEventSurface(t *testing.T) {
 			t.Fatal(err)
 		}
 		switch value := event.(type) {
-		case UnknownEvent:
-			sawUnknown = true
+		case *MessageAccepted:
+			messageAccepted = value
 		case *ReasoningDone:
 			reasoningDone = value
 		case *TextDelta:
@@ -143,8 +143,8 @@ func TestTypedSessionAndEventSurface(t *testing.T) {
 	if reasoningDone == nil || reasoningDone.SessionID != session.ID || reasoningDone.DurationSecs != 13.5 {
 		t.Fatalf("reasoning_done=%+v, want duration 13.5 for session %q", reasoningDone, session.ID)
 	}
-	if !sawUnknown {
-		t.Fatal("stream did not preserve and skip the unknown message_accepted event")
+	if messageAccepted == nil || messageAccepted.SessionID != session.ID {
+		t.Fatalf("message_accepted=%+v, want session %q", messageAccepted, session.ID)
 	}
 	if turnDone.SessionID != session.ID {
 		t.Fatalf("turn_done=%+v, want session %q", turnDone, session.ID)
@@ -267,6 +267,190 @@ func TestDecodeTypedEventPreservesUnknownKinds(t *testing.T) {
 	}
 }
 
+func TestDecodeRemainingKnownEvents(t *testing.T) {
+	title := "renamed"
+	tests := []struct {
+		kind   string
+		fields string
+		check  func(*testing.T, TypedEvent)
+	}{
+		{
+			kind:   "side_pane_images",
+			fields: `{"session_id":"session_images","images":[{"media_type":"image/png","data":"aW1hZ2U=","label":"preview","source":{"kind":"tool_result","tool_name":"image_gen"},"anchor":{"kind":"tool_call","id":"call_1"}}]}`,
+			check: func(t *testing.T, event TypedEvent) {
+				value, ok := event.(*SidePaneImages)
+				if !ok || value.SessionID != "session_images" || len(value.Images) != 1 {
+					t.Fatalf("event=%#v, want *SidePaneImages", event)
+				}
+				image := value.Images[0]
+				if image.MediaType != "image/png" || image.Data != "aW1hZ2U=" || image.Label == nil || *image.Label != "preview" || image.Source.Kind != "tool_result" || image.Source.ToolName != "image_gen" || image.Anchor == nil || image.Anchor.Kind != "tool_call" || image.Anchor.ID != "call_1" {
+					t.Fatalf("image=%+v, want exact rendered image fields", image)
+				}
+			},
+		},
+		{
+			kind:   "message_accepted",
+			fields: `{"session_id":"session_accepted"}`,
+			check: func(t *testing.T, event TypedEvent) {
+				value, ok := event.(*MessageAccepted)
+				if !ok || value.SessionID != "session_accepted" {
+					t.Fatalf("event=%#v, want *MessageAccepted", event)
+				}
+			},
+		},
+		{
+			kind:   "models",
+			fields: `{"session_id":"session_models","models":["model-a","model-b"],"current":"model-b"}`,
+			check: func(t *testing.T, event TypedEvent) {
+				value, ok := event.(*Models)
+				if !ok || value.SessionID != "session_models" || len(value.Models) != 2 || value.Models[1] != "model-b" || value.Current != "model-b" {
+					t.Fatalf("event=%#v, want *Models with exact fields", event)
+				}
+			},
+		},
+		{
+			kind:   "runtime_info",
+			fields: `{"session_id":"session_runtime","provider":"openai","model":"gpt-5.6-sol","reasoning_effort":"medium","routes":[{"model":"gpt-5.6-sol","provider":"openai","api_method":"responses","available":true,"detail":"ready"}]}`,
+			check: func(t *testing.T, event TypedEvent) {
+				value, ok := event.(*RuntimeInfo)
+				if !ok || value.SessionID != "session_runtime" || value.Provider != "openai" || value.Model != "gpt-5.6-sol" || value.ReasoningEffort != "medium" || len(value.Routes) != 1 || value.Routes[0].APIMethod != "responses" || !value.Routes[0].Available {
+					t.Fatalf("event=%#v, want *RuntimeInfo with exact fields", event)
+				}
+			},
+		},
+		{
+			kind:   "credential_updated",
+			fields: `{"provider":"openai","configured":true}`,
+			check: func(t *testing.T, event TypedEvent) {
+				value, ok := event.(*CredentialUpdated)
+				if !ok || value.Provider != "openai" || !value.Configured {
+					t.Fatalf("event=%#v, want *CredentialUpdated", event)
+				}
+			},
+		},
+		{
+			kind:   "file_content",
+			fields: `{"session_id":"session_file","path":"README.md","content":"hello","size":5,"truncated":false}`,
+			check: func(t *testing.T, event TypedEvent) {
+				value, ok := event.(*FileContent)
+				if !ok || value.SessionID != "session_file" || value.Path != "README.md" || value.Content != "hello" || value.Size != 5 || value.Truncated {
+					t.Fatalf("event=%#v, want *FileContent", event)
+				}
+			},
+		},
+		{
+			kind:   "files",
+			fields: `{"session_id":"session_files","paths":["a.go","b.go"]}`,
+			check: func(t *testing.T, event TypedEvent) {
+				value, ok := event.(*Files)
+				if !ok || value.SessionID != "session_files" || len(value.Paths) != 2 || value.Paths[1] != "b.go" {
+					t.Fatalf("event=%#v, want *Files", event)
+				}
+			},
+		},
+		{
+			kind:   "text_matches",
+			fields: `{"session_id":"session_matches","matches":[{"path":"main.go","line":7,"column":3,"preview":"match"}]}`,
+			check: func(t *testing.T, event TypedEvent) {
+				value, ok := event.(*TextMatches)
+				if !ok || value.SessionID != "session_matches" || len(value.Matches) != 1 || value.Matches[0].Path != "main.go" || value.Matches[0].Line != 7 || value.Matches[0].Column != 3 || value.Matches[0].Preview != "match" {
+					t.Fatalf("event=%#v, want *TextMatches", event)
+				}
+			},
+		},
+		{
+			kind:   "file_status",
+			fields: `{"session_id":"session_status","path":"main.go","exists":true,"kind":"file","size":42,"modified_ms":99}`,
+			check: func(t *testing.T, event TypedEvent) {
+				value, ok := event.(*FileStatus)
+				if !ok || value.SessionID != "session_status" || value.Path != "main.go" || !value.Exists || value.Kind != "file" || value.Size == nil || *value.Size != 42 || value.ModifiedMS == nil || *value.ModifiedMS != 99 {
+					t.Fatalf("event=%#v, want *FileStatus preserving optional metadata", event)
+				}
+			},
+		},
+		{
+			kind:   "compacted",
+			fields: `{"session_id":"session_compacted","message":"scheduled"}`,
+			check: func(t *testing.T, event TypedEvent) {
+				value, ok := event.(*Compacted)
+				if !ok || value.SessionID != "session_compacted" || value.Message != "scheduled" {
+					t.Fatalf("event=%#v, want *Compacted", event)
+				}
+			},
+		},
+		{
+			kind:   "session_renamed",
+			fields: `{"session_id":"session_renamed","title":"renamed","display_title":"renamed"}`,
+			check: func(t *testing.T, event TypedEvent) {
+				value, ok := event.(*SessionRenamed)
+				if !ok || value.SessionID != "session_renamed" || value.Title == nil || *value.Title != title || value.DisplayTitle != "renamed" {
+					t.Fatalf("event=%#v, want *SessionRenamed preserving optional title", event)
+				}
+			},
+		},
+		{
+			kind:   "model_info",
+			fields: `{"session_id":"session_model","provider":"openai","model":"gpt-5.6-sol","reasoning_effort":"high"}`,
+			check: func(t *testing.T, event TypedEvent) {
+				value, ok := event.(*ModelInfo)
+				if !ok || value.ReasoningEffort != "high" {
+					t.Fatalf("event=%#v, want ModelInfo reasoning_effort", event)
+				}
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.kind, func(t *testing.T) {
+			event, err := decodeTypedEvent(Event{Kind: test.kind, Fields: json.RawMessage(test.fields)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			test.check(t, event)
+		})
+	}
+}
+
+func TestDecodeRemainingKnownEventsPreservesOptionalAbsence(t *testing.T) {
+	event, err := decodeTypedEvent(Event{
+		Kind:   "session_renamed",
+		Fields: json.RawMessage(`{"session_id":"session_renamed","display_title":"generated"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	renamed, ok := event.(*SessionRenamed)
+	if !ok || renamed.Title != nil || renamed.DisplayTitle != "generated" {
+		t.Fatalf("event=%#v, want cleared title preserved as nil", event)
+	}
+
+	event, err = decodeTypedEvent(Event{
+		Kind:   "file_status",
+		Fields: json.RawMessage(`{"session_id":"session_status","path":"missing","exists":false,"kind":"missing"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, ok := event.(*FileStatus)
+	if !ok || status.Size != nil || status.ModifiedMS != nil {
+		t.Fatalf("event=%#v, want absent file metadata preserved as nil", event)
+	}
+}
+
+func TestDecodeRemainingKnownEventRejectsMalformedFields(t *testing.T) {
+	event, err := decodeTypedEvent(Event{
+		Kind:   "models",
+		Fields: json.RawMessage(`{"session_id":"session_models","models":"not-an-array"}`),
+	})
+	if err == nil || event != nil {
+		t.Fatalf("event=%#v err=%v, want recognized models compatibility failure", event, err)
+	}
+	var compatibilityErr *CompatibilityError
+	if !errors.As(err, &compatibilityErr) || compatibilityErr.Kind != "models" {
+		t.Fatalf("error=%v, want models CompatibilityError", err)
+	}
+}
+
 func TestFailedRunConnectionPhaseFixtureReproducesUnsupportedTypedEvent(t *testing.T) {
 	const payload = `{"session_id":"session_fixture","phase":"fixture phase","prompt":"SYNTHETIC_PROMPT_MUST_NOT_BE_RETAINED","tool_arguments":"SYNTHETIC_TOOL_ARGUMENTS_MUST_NOT_BE_RETAINED"}`
 	event, err := decodeTypedEvent(Event{
@@ -292,6 +476,7 @@ func TestTypedEventSemanticClassesAreExplicitAndClosed(t *testing.T) {
 		class EventSemanticClass
 	}{
 		{"content", &TextDelta{}, EventSemanticClassContentProgress},
+		{"side pane images", &SidePaneImages{}, EventSemanticClassContentProgress},
 		{"advisory", &ConnectionPhase{}, EventSemanticClassAdvisoryLifecycle},
 		{"terminal", &TurnDone{}, EventSemanticClassTerminal},
 		{"permission", &PermissionRequest{}, EventSemanticClassPermission},
@@ -305,7 +490,20 @@ func TestTypedEventSemanticClassesAreExplicitAndClosed(t *testing.T) {
 			}
 		})
 	}
-	for _, event := range []TypedEvent{nil, UnknownEvent{Kind: "future_event"}, &unclassifiedTypedEvent{}} {
+	for _, event := range []TypedEvent{
+		nil,
+		UnknownEvent{Kind: "future_event"},
+		&unclassifiedTypedEvent{},
+		&Models{},
+		&RuntimeInfo{},
+		&CredentialUpdated{},
+		&FileContent{},
+		&Files{},
+		&TextMatches{},
+		&FileStatus{},
+		&Compacted{},
+		&SessionRenamed{},
+	} {
 		if class, ok := SemanticClassOf(event); ok || class != "" {
 			t.Fatalf("SemanticClassOf(%T)=(%q,%v), want no classification", event, class, ok)
 		}

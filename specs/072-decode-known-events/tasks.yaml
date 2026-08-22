@@ -17,7 +17,7 @@ phases:
     tasks:
       - id: "T001"
         title: "Add exhaustive typed decoder fixtures"
-        status: "InProgress"
+        status: "Completed"
         type: "test"
         parallel: true
         story_id: "US-001"
@@ -28,7 +28,7 @@ phases:
           - "Fixtures verify nested and optional canonical values."
       - id: "T002"
         title: "Extend raw and owned-event parity inventory"
-        status: "Pending"
+        status: "Completed"
         type: "test"
         parallel: true
         story_id: "US-002"
@@ -44,7 +44,7 @@ phases:
     tasks:
       - id: "T003"
         title: "Add canonical event payload structs"
-        status: "Pending"
+        status: "Completed"
         type: "implementation"
         parallel: false
         story_id: "US-001"
@@ -57,7 +57,7 @@ phases:
           - "ModelInfo exposes ReasoningEffort additively."
       - id: "T004"
         title: "Decode all scoped known event kinds"
-        status: "Pending"
+        status: "Completed"
         type: "implementation"
         parallel: false
         story_id: "US-001"
@@ -70,7 +70,7 @@ phases:
           - "Unknown future kinds still return UnknownEvent."
       - id: "T005"
         title: "Align raw known inventory and semantic classes"
-        status: "Pending"
+        status: "Completed"
         type: "implementation"
         parallel: false
         story_id: "US-002"
@@ -88,7 +88,7 @@ phases:
     tasks:
       - id: "T006"
         title: "Update typed-event compatibility documentation"
-        status: "Pending"
+        status: "Completed"
         type: "documentation"
         parallel: false
         story_id: "US-002"
@@ -104,7 +104,7 @@ phases:
     tasks:
       - id: "T007"
         title: "Run focused, race, full, formatting, and cleanliness validation"
-        status: "Pending"
+        status: "Completed"
         type: "test"
         parallel: false
         story_id: null

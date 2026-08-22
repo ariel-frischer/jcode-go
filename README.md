@@ -241,16 +241,25 @@ emits at most one `Observer` observation per turn. The observation contains
 bounded sanitized `EventKind`, `EventType`, and `Disposition` fields; it never
 contains event payloads. Unknown, malformed, nil, and unclassified owned-turn
 input ends the turn as `TurnResultProtocolError` with a payload-free
-`CompatibilityError` no longer than 256 UTF-8 bytes. `Session.Events` remains
-the compatibility seam: additive unknown kinds are represented by
-`UnknownEvent{Kind, Fields}` instead of being silently dropped.
+`CompatibilityError` no longer than 256 UTF-8 bytes.
+
+`Session.Events` is the broader typed compatibility seam. Stable protocol kinds
+decode to exported values, including `MessageAccepted`, `SidePaneImages`,
+`Models`, `RuntimeInfo`, `CredentialUpdated`, `FileContent`, `Files`,
+`TextMatches`, `FileStatus`, `Compacted`, and `SessionRenamed`. Request/reply
+shapes that the canonical harness marks outside owned turns are intentionally
+not classified by `SemanticClassOf`; receiving one on an owned `Turn` therefore
+still fails closed. Harness `error` frames remain an `EventError` return so
+callers can inspect `Code` and the redacted `ProviderCode`. A genuinely unknown
+future kind remains `UnknownEvent{Kind, Fields}` instead of being silently
+dropped.
 
 The raw request path remains available when an application needs a request or event added by a newer server:
 
 
 `Request` waits for the correlated reply or `ctx.Done()`. Each request also has a 30-second SDK deadline by default, preventing a bridge or daemon that accepts a connection but never replies from hanging a caller indefinitely. Set `Options.RequestTimeout` to a positive duration to override that bound. Cancellation removes the pending request locally, but it does not necessarily cancel work already accepted by the server. For an owned turn, use `Turn.Cancel`; raw protocol callers may still send `cancel` directly.
 
-[`examples/streaming`](examples/streaming) demonstrates a long-lived service. For a typed stream, use `session.Events(ctx)` and switch on `*TextDelta`, `*ToolStart`, `*ToolExec`, `*TokenUsage`, `*PermissionRequest`, and `*TurnDone`. The lower-level `Subscription` API remains useful when a service wants raw event fields:
+[`examples/streaming`](examples/streaming) demonstrates a long-lived service. For a typed stream, use `session.Events(ctx)` and switch on the event values relevant to the application, such as `*TextDelta`, `*ToolStart`, `*ToolExec`, `*SidePaneImages`, `*TokenUsage`, `*PermissionRequest`, and `*TurnDone`. The lower-level `Subscription` API remains useful when a service wants raw event fields:
 
 
 ```go

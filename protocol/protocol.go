@@ -160,7 +160,7 @@ func EventKind(event Event) string {
 var knownEvents = map[string]struct{}{
 	"hello_ok": {}, "ok": {}, "error": {}, "sessions": {}, "attached": {}, "history": {}, "pong": {},
 	"text_delta": {}, "reasoning_delta": {}, "reasoning_done": {}, "tool_start": {}, "tool_input_delta": {},
-	"tool_exec": {}, "tool_done": {}, "token_usage": {}, "turn_done": {}, "background_progress": {},
+	"tool_exec": {}, "tool_done": {}, "side_pane_images": {}, "token_usage": {}, "turn_done": {}, "background_progress": {},
 	"message_accepted": {}, "permission_request": {}, "session_status": {}, "model_info": {}, "models": {},
 	"runtime_info": {}, "credential_updated": {}, "file_content": {}, "files": {}, "text_matches": {},
 	"file_status": {}, "compacted": {}, "connection_phase": {}, "session_renamed": {},

@@ -1,7 +1,7 @@
 feature:
   branch: "agent/jcode-go-7tf-events"
   created: "2026-08-22"
-  status: "Approved"
+  status: "Completed"
   input: "Decode the remaining Jcode protocol event kinds instead of returning UnknownEvent, including newly verified canonical event gaps, while preserving owned-turn and raw protocol contracts."
 
 user_stories:

@@ -367,6 +367,37 @@ type ToolDone struct {
 
 func (ToolDone) typedEvent() {}
 
+// RenderedImageSource identifies where a rendered image originated.
+type RenderedImageSource struct {
+	Kind     string `json:"kind"`
+	ToolName string `json:"tool_name,omitempty"`
+	Role     string `json:"role,omitempty"`
+}
+
+// RenderedImageAnchor identifies where a rendered image belongs in a transcript.
+type RenderedImageAnchor struct {
+	Kind    string `json:"kind"`
+	ID      string `json:"id,omitempty"`
+	Ordinal uint64 `json:"ordinal,omitempty"`
+}
+
+// RenderedImage is an image and its optional transcript placement metadata.
+type RenderedImage struct {
+	MediaType string               `json:"media_type"`
+	Data      string               `json:"data"`
+	Label     *string              `json:"label,omitempty"`
+	Source    RenderedImageSource  `json:"source"`
+	Anchor    *RenderedImageAnchor `json:"anchor,omitempty"`
+}
+
+// SidePaneImages reports images produced for the attached session.
+type SidePaneImages struct {
+	SessionID string          `json:"session_id"`
+	Images    []RenderedImage `json:"images"`
+}
+
+func (SidePaneImages) typedEvent() {}
+
 type TokenUsage struct {
 	SessionID      string `json:"session_id"`
 	Input          int64  `json:"input"`
@@ -423,12 +454,114 @@ type ConnectionPhase struct {
 func (ConnectionPhase) typedEvent() {}
 
 type ModelInfo struct {
-	SessionID string `json:"session_id"`
-	Provider  string `json:"provider,omitempty"`
-	Model     string `json:"model,omitempty"`
+	SessionID       string `json:"session_id"`
+	Provider        string `json:"provider,omitempty"`
+	Model           string `json:"model,omitempty"`
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 func (ModelInfo) typedEvent() {}
+
+// ModelRouteInfo describes one provider route exposed by the runtime.
+type ModelRouteInfo struct {
+	Model     string `json:"model"`
+	Provider  string `json:"provider"`
+	APIMethod string `json:"api_method"`
+	Available bool   `json:"available"`
+	Detail    string `json:"detail"`
+}
+
+// Models reports the models available to a session and its current model.
+type Models struct {
+	SessionID string   `json:"session_id"`
+	Models    []string `json:"models"`
+	Current   string   `json:"current,omitempty"`
+}
+
+func (Models) typedEvent() {}
+
+// RuntimeInfo reports provider identity and every route exposed by the runtime.
+type RuntimeInfo struct {
+	SessionID       string           `json:"session_id"`
+	Provider        string           `json:"provider,omitempty"`
+	Model           string           `json:"model,omitempty"`
+	ReasoningEffort string           `json:"reasoning_effort,omitempty"`
+	Routes          []ModelRouteInfo `json:"routes"`
+}
+
+func (RuntimeInfo) typedEvent() {}
+
+// CredentialUpdated reports whether a provider credential is configured.
+type CredentialUpdated struct {
+	Provider   string `json:"provider"`
+	Configured bool   `json:"configured"`
+}
+
+func (CredentialUpdated) typedEvent() {}
+
+// FileContent is the result of reading a file through the harness.
+type FileContent struct {
+	SessionID string `json:"session_id"`
+	Path      string `json:"path"`
+	Content   string `json:"content"`
+	Size      uint64 `json:"size"`
+	Truncated bool   `json:"truncated"`
+}
+
+func (FileContent) typedEvent() {}
+
+// Files is the result of finding files through the harness.
+type Files struct {
+	SessionID string   `json:"session_id"`
+	Paths     []string `json:"paths"`
+}
+
+func (Files) typedEvent() {}
+
+// TextMatch identifies one text search result.
+type TextMatch struct {
+	Path    string `json:"path"`
+	Line    uint32 `json:"line"`
+	Column  uint32 `json:"column"`
+	Preview string `json:"preview"`
+}
+
+// TextMatches is the result of searching text through the harness.
+type TextMatches struct {
+	SessionID string      `json:"session_id"`
+	Matches   []TextMatch `json:"matches"`
+}
+
+func (TextMatches) typedEvent() {}
+
+// FileStatus reports file existence and optional metadata.
+type FileStatus struct {
+	SessionID  string  `json:"session_id"`
+	Path       string  `json:"path"`
+	Exists     bool    `json:"exists"`
+	Kind       string  `json:"kind"`
+	Size       *uint64 `json:"size,omitempty"`
+	ModifiedMS *uint64 `json:"modified_ms,omitempty"`
+}
+
+func (FileStatus) typedEvent() {}
+
+// Compacted reports that session compaction was scheduled.
+type Compacted struct {
+	SessionID string `json:"session_id"`
+	Message   string `json:"message"`
+}
+
+func (Compacted) typedEvent() {}
+
+// SessionRenamed reports a session title change. Title is nil when cleared.
+type SessionRenamed struct {
+	SessionID    string  `json:"session_id"`
+	Title        *string `json:"title,omitempty"`
+	DisplayTitle string  `json:"display_title"`
+}
+
+func (SessionRenamed) typedEvent() {}
 
 type UnknownEvent struct {
 	Kind   string
@@ -443,7 +576,8 @@ func SemanticClassOf(event TypedEvent) (EventSemanticClass, bool) {
 	switch event.(type) {
 	case TextDelta, *TextDelta, ReasoningDelta, *ReasoningDelta,
 		ToolStart, *ToolStart, ToolInputDelta, *ToolInputDelta,
-		ToolDone, *ToolDone, TokenUsage, *TokenUsage:
+		ToolDone, *ToolDone, SidePaneImages, *SidePaneImages,
+		TokenUsage, *TokenUsage:
 		return EventSemanticClassContentProgress, true
 	case ReasoningDone, *ReasoningDone, BackgroundProgress, *BackgroundProgress,
 		MessageAccepted, *MessageAccepted, SessionStatus, *SessionStatus,
@@ -484,12 +618,16 @@ func decodeTypedEvent(event Event) (TypedEvent, error) {
 		value = &ToolExec{}
 	case "tool_done":
 		value = &ToolDone{}
+	case "side_pane_images":
+		value = &SidePaneImages{}
 	case "token_usage":
 		value = &TokenUsage{}
 	case "turn_done":
 		value = &TurnDone{}
 	case "background_progress":
 		value = &BackgroundProgress{}
+	case "message_accepted":
+		value = &MessageAccepted{}
 	case "permission_request":
 		value = &PermissionRequest{}
 	case "session_status":
@@ -498,6 +636,24 @@ func decodeTypedEvent(event Event) (TypedEvent, error) {
 		value = &ConnectionPhase{}
 	case "model_info":
 		value = &ModelInfo{}
+	case "models":
+		value = &Models{}
+	case "runtime_info":
+		value = &RuntimeInfo{}
+	case "credential_updated":
+		value = &CredentialUpdated{}
+	case "file_content":
+		value = &FileContent{}
+	case "files":
+		value = &Files{}
+	case "text_matches":
+		value = &TextMatches{}
+	case "file_status":
+		value = &FileStatus{}
+	case "compacted":
+		value = &Compacted{}
+	case "session_renamed":
+		value = &SessionRenamed{}
 	default:
 		return UnknownEvent{Kind: event.Kind, Fields: event.Fields}, nil
 	}

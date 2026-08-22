@@ -95,6 +95,12 @@ func TestEventKindPreservesKnownAndUnknownProvenance(t *testing.T) {
 	}
 }
 
+func TestSidePaneImagesIsKnownEvent(t *testing.T) {
+	if !IsKnownEvent("side_pane_images") {
+		t.Fatal("side_pane_images is absent from the canonical known-event inventory")
+	}
+}
+
 func TestHandshakeAndErrorClassification(t *testing.T) {
 	frame, err := DecodeServerFrame([]byte(`{"v":1,"reply_to":1,"ev":"hello_ok","version":1,"server":"h","capabilities":["events"],"extra":7}`))
 	if err != nil {
