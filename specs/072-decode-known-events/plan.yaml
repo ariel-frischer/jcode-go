@@ -1,0 +1,171 @@
+plan:
+  branch: "agent/jcode-go-7tf-events"
+  created: "2026-08-22"
+  spec_path: "specs/072-decode-known-events/spec.yaml"
+
+summary: |
+  Extend the existing hand-written typed-event model in session.go with canonical payload structs and exact decoder cases. The Rust ApiEvent publication contract remains authoritative: SidePaneImages is an owned content-progress event, message_accepted is an owned advisory event intercepted only by Turn, terminal error retains EventError, and request/reply-shaped events remain outside owned turns and therefore receive no SemanticClassOf class.
+
+  Strengthen parity tests so canonical event additions cannot be present in Rust or TypeScript while absent from Go. Preserve genuinely unknown kinds as UnknownEvent and preserve bounded CompatibilityError behavior for malformed recognized payloads.
+
+technical_context:
+  language: "Go 1.23"
+  framework: "None"
+  primary_dependencies: []
+  storage: "None"
+  testing:
+    framework: "Go testing package"
+    approach: "Table-driven unit tests for typed decoding and semantic classes, existing lifecycle tests, raw protocol parity, full module tests, Linux private-runtime acceptance."
+  target_platform: "Linux for private-runtime validation; portable protocol and event model"
+  project_type: "library"
+  performance_goals: "No additional goroutines, allocations beyond decoding the selected concrete payload, or unbounded buffers."
+  constraints:
+    - "Minimal additive public API"
+    - "Preserve protocol v1 raw APIs and Turn ownership"
+    - "No new dependencies"
+    - "OutsideOwnedTurn events must not become legal owned Turn events"
+  scale_scope: "One typed representation per verified canonical event kind"
+
+constitution_check:
+  constitution_path: "AGENTS.md"
+  gates:
+    - name: "Minimal additive Go API"
+      status: "PASS"
+      notes: "Add exported payload structs and fields only where canonical wire data requires them."
+    - name: "Preserve protocol v1 and ownership contracts"
+      status: "PASS"
+      notes: "No raw request/reply or Turn lifecycle changes; canonical publication dispositions drive class behavior."
+    - name: "Linux-only private runtime program"
+      status: "PASS"
+      notes: "No Windows implementation work is added."
+    - name: "Focused and full validation"
+      status: "PASS"
+      notes: "Plan includes focused decoder/parity/lifecycle tests, race tests where lifecycle is exercised, full tests, diff check, and clean commit."
+
+research_findings:
+  decisions:
+    - topic: "Canonical event fields"
+      decision: "Mirror Rust ApiEvent and TypeScript ApiEvent fields exactly, using pointers for optional values where absence changes meaning."
+      rationale: "The public Go mirror consumes the canonical Jcode harness contract and must not invent a vocabulary."
+      alternatives_considered:
+        - "Keep raw JSON fields only"
+        - "Use map[string]any payloads"
+    - topic: "Semantic classes for requested reply-shaped events"
+      decision: "Leave Models, RuntimeInfo, CredentialUpdated, FileContent, Files, TextMatches, FileStatus, Compacted, and SessionRenamed unclassified."
+      rationale: "Rust publication_contract marks them OutsideOwnedTurn with no semantic class."
+      alternatives_considered:
+        - "Classify every event advisory_lifecycle"
+        - "Add a new reply semantic class"
+    - topic: "New canonical gaps beyond the Bead description"
+      decision: "Include side_pane_images, message_accepted typed decoding, and ModelInfo.reasoning_effort."
+      rationale: "Current canonical TypeScript/Rust contracts contain these fields/kinds while the Go mirror is incomplete."
+      alternatives_considered:
+        - "Implement only the stale event list"
+    - topic: "Terminal error"
+      decision: "Retain EventError as an error return rather than making it a TypedEvent."
+      rationale: "Existing Session.Events and Turn terminal contracts already preserve code, provider code, and appropriate message redaction."
+      alternatives_considered:
+        - "Duplicate error as an ordinary stream value"
+
+api_contracts:
+  endpoints: []
+
+data_model:
+  entities:
+    - name: "RenderedImage"
+      description: "Image content and transcript placement metadata emitted by side_pane_images."
+      fields:
+        - name: "media_type"
+          type: "string"
+          description: "Image media type"
+          constraints: "Canonical string field"
+        - name: "data"
+          type: "string"
+          description: "Base64 image data"
+          constraints: "Canonical string field"
+        - name: "source"
+          type: "RenderedImageSource"
+          description: "Tagged source metadata"
+          constraints: "Kind identifies user_input, tool_result, or other"
+        - name: "anchor"
+          type: "optional RenderedImageAnchor"
+          description: "Optional transcript placement metadata"
+          constraints: "Kind identifies tool_call or user_prompt"
+      relationships: []
+    - name: "RuntimeInfo"
+      description: "Provider, model, reasoning effort, and available route metadata."
+      fields:
+        - name: "routes"
+          type: "[]ModelRouteInfo"
+          description: "Canonical daemon route inventory"
+          constraints: "Preserve order"
+      relationships: []
+    - name: "FileStatus"
+      description: "File existence and optional metadata reply."
+      fields:
+        - name: "size"
+          type: "optional uint64"
+          description: "File size when available"
+          constraints: "Absence must differ from zero"
+        - name: "modified_ms"
+          type: "optional uint64"
+          description: "Modification time when available"
+          constraints: "Absence must differ from zero"
+      relationships: []
+
+project_structure:
+  documentation:
+    - path: "README.md"
+      description: "Document complete typed-event and ownership compatibility behavior."
+    - path: "specs/072-decode-known-events/*.yaml"
+      description: "Autospec requirements, plan, and task evidence."
+  source_code:
+    - path: "session.go"
+      description: "Exported event payload types, semantic classes, and typed decoder cases."
+    - path: "protocol/protocol.go"
+      description: "Raw known-event inventory including side_pane_images."
+  tests:
+    - path: "typed_api_test.go"
+      description: "Exhaustive representative typed decoding, semantic classes, errors, malformed payloads, and unknown preservation."
+    - path: "protocol/parity_test.go"
+      description: "Canonical Rust publication and Go owned-event coverage gate."
+    - path: "protocol/protocol_test.go"
+      description: "Raw known-event recognition where focused coverage is useful."
+
+implementation_phases:
+  - phase: 1
+    name: "Tests and parity inventory"
+    goal: "Encode canonical event coverage and lifecycle boundaries as failing tests first."
+    deliverables:
+      - "Table-driven new event decode fixtures"
+      - "MessageAccepted typed stream expectation"
+      - "SidePaneImages raw/owned parity entry"
+      - "Owned versus outside semantic class assertions"
+  - phase: 2
+    name: "Typed event model and decoder"
+    goal: "Add minimal public payload types and exact decoder cases."
+    dependencies:
+      - "Phase 1"
+    deliverables:
+      - "Canonical event structs and helper payload structs"
+      - "Decoder cases for all scoped kinds"
+      - "SidePaneImages content-progress class"
+      - "ModelInfo reasoning effort"
+  - phase: 3
+    name: "Compatibility documentation and validation"
+    goal: "Document the boundary and prove repository-wide compatibility."
+    dependencies:
+      - "Phase 2"
+    deliverables:
+      - "README compatibility update"
+      - "Focused and full test evidence"
+      - "Clean scoped commit"
+
+open_questions: []
+
+_meta:
+  version: "1.0.0"
+  generator: "autospec"
+  generator_version: "manual-stage-after-native-sdk-command-unsupported"
+  created: "2026-08-22T22:53:00Z"
+  artifact_type: "plan"

@@ -1,0 +1,138 @@
+feature:
+  branch: "agent/jcode-go-7tf-events"
+  created: "2026-08-22"
+  status: "Approved"
+  input: "Decode the remaining Jcode protocol event kinds instead of returning UnknownEvent, including newly verified canonical event gaps, while preserving owned-turn and raw protocol contracts."
+
+user_stories:
+  - id: "US-001"
+    title: "Receive typed known Jcode events"
+    priority: "P1"
+    as_a: "Go SDK event-stream consumer"
+    i_want: "every recognized non-control event to expose its canonical payload through an exported typed value"
+    so_that: "ordinary Jcode activity does not require UnknownEvent inspection"
+    why_this_priority: "UnknownEvent for stable protocol kinds breaks strict orchestrators and hides supported payloads."
+    independent_test: "Decode one representative frame for every newly supported kind and verify the concrete type and fields."
+    acceptance_scenarios:
+      - given: "A known event kind with a valid canonical payload"
+        when: "the SDK decodes it through Session.Events or decodeTypedEvent"
+        then: "the result is the matching exported typed event with exact values"
+      - given: "message_accepted is observed by Session.Events"
+        when: "the SDK decodes the event"
+        then: "it is MessageAccepted rather than UnknownEvent"
+  - id: "US-002"
+    title: "Preserve lifecycle and forward compatibility"
+    priority: "P1"
+    as_a: "Go SDK lifecycle owner"
+    i_want: "owned-turn semantic classes and unknown-event behavior to remain explicit"
+    so_that: "new decoding cannot weaken fail-closed lifecycle handling"
+    independent_test: "Verify canonical owned events have their reviewed classes, outside-turn reply events remain unclassified, terminal errors retain the existing error path, and a synthetic future kind remains UnknownEvent."
+    acceptance_scenarios:
+      - given: "A newly typed owned event"
+        when: "SemanticClassOf is called"
+        then: "it returns the canonical reviewed class"
+      - given: "A request/reply event outside owned turns"
+        when: "SemanticClassOf is called"
+        then: "it returns false"
+      - given: "A genuinely unknown future event"
+        when: "the SDK decodes it"
+        then: "UnknownEvent preserves its kind and raw fields"
+
+requirements:
+  functional:
+    - id: "FR-001"
+      description: "MUST add typed decoding for compacted, credential_updated, session_renamed, models, runtime_info, file_content, files, text_matches, and file_status using canonical wire fields."
+      testable: true
+      acceptance_criteria: "A table-driven test validates the concrete type and representative fields for every listed kind."
+    - id: "FR-002"
+      description: "MUST add canonical side_pane_images to raw known-event parity and decode it as an owned content-progress event."
+      testable: true
+      acceptance_criteria: "Raw parity recognizes side_pane_images and typed decoding preserves nested rendered image fields."
+    - id: "FR-003"
+      description: "MUST decode message_accepted as MessageAccepted for Session.Events while preserving Turn.Accepted interception semantics."
+      testable: true
+      acceptance_criteria: "Typed stream tests receive MessageAccepted and existing owned Turn acceptance tests pass unchanged."
+    - id: "FR-004"
+      description: "MUST preserve the existing EventError terminal path, including ProviderCode, rather than representing error as an ordinary TypedEvent."
+      testable: true
+      acceptance_criteria: "Existing typed error and provider redaction tests pass."
+    - id: "FR-005"
+      description: "MUST add canonical reasoning_effort to ModelInfo without changing existing fields."
+      testable: true
+      acceptance_criteria: "A typed ModelInfo fixture preserves reasoning_effort."
+    - id: "FR-006"
+      description: "MUST preserve UnknownEvent for genuinely unrecognized future kinds and reject malformed payloads for recognized kinds with CompatibilityError."
+      testable: true
+      acceptance_criteria: "Unknown and malformed table tests retain existing behavior."
+    - id: "FR-007"
+      description: "MUST preserve raw protocol v1 APIs, Turn ownership, provider behavior, retry policy, and request/reply correlation."
+      testable: true
+      acceptance_criteria: "Focused lifecycle tests and go test ./... -count=1 pass without unrelated public signature changes."
+  non_functional:
+    - id: "NFR-001"
+      category: "reliability"
+      description: "Typed known-event coverage remains synchronized with the canonical Rust publication contract and TypeScript known-event inventory."
+      measurable_target: "All canonical owned events have one typed representation and reviewed semantic class; all requested outside-turn events have typed representations and no owned class."
+    - id: "NFR-002"
+      category: "code_quality"
+      description: "Public changes remain minimal, additive, and Go-idiomatic."
+      measurable_target: "No new dependencies and no changes outside the event model, parity tests, typed tests, specs, and compatibility documentation."
+
+success_criteria:
+  measurable_outcomes:
+    - id: "SC-001"
+      description: "SDK consumers receive concrete values for every stable ordinary event covered by this feature."
+      metric: "New known-event fixtures decoded as concrete types"
+      target: "100 percent"
+    - id: "SC-002"
+      description: "Forward-compatible future events remain safely distinguishable."
+      metric: "Synthetic unknown fixtures preserved as UnknownEvent"
+      target: "100 percent"
+
+key_entities:
+  - name: "TypedEvent"
+    description: "Exported Go representation of a recognized asynchronous or reply-shaped Jcode event."
+    attributes:
+      - "canonical wire kind"
+      - "canonical payload fields"
+  - name: "EventSemanticClass"
+    description: "Closed handling policy for events permitted on owned Turn streams."
+    attributes:
+      - "content_progress"
+      - "advisory_lifecycle"
+      - "terminal"
+      - "permission"
+      - "tool_effect"
+
+edge_cases:
+  - scenario: "Optional session title is absent after clearing a rename"
+    expected_behavior: "SessionRenamed preserves absence separately from an explicit empty string."
+  - scenario: "Optional file size or modified timestamp is absent"
+    expected_behavior: "FileStatus preserves absence without inventing zero-valued metadata."
+  - scenario: "A recognized event contains extra additive fields"
+    expected_behavior: "Canonical fields decode and unknown fields are ignored."
+  - scenario: "A recognized event contains a non-object or wrong canonical field type"
+    expected_behavior: "Decoding returns the existing bounded CompatibilityError."
+
+assumptions:
+  - "The canonical Rust ApiEvent and publication_contract are authoritative for fields, ownership, and semantic classes."
+  - "Hello, OK, sessions, attached, history, pong, and request-level error remain handled by request/reply or existing error paths rather than ordinary typed-event decoding."
+  - "OutsideOwnedTurn events may be decoded for typed session consumers but deliberately remain unclassified by SemanticClassOf."
+
+constraints:
+  - "Preserve protocol v1 raw APIs and documented ownership contracts."
+  - "Do not add retries, fallback policy, provider/model selection changes, or Windows lifecycle work."
+  - "No third-party dependencies."
+
+out_of_scope:
+  - "Changing the harness publication contract"
+  - "Making outside-turn request replies legal owned Turn events"
+  - "Locus-specific exceptions"
+  - "Live or costly provider validation"
+
+_meta:
+  version: "1.0.0"
+  generator: "autospec"
+  generator_version: "manual-stage-after-native-sdk-command-unsupported"
+  created: "2026-08-22T22:52:00Z"
+  artifact_type: "spec"
