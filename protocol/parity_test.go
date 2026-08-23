@@ -80,7 +80,7 @@ func TestProtocolFixtureParity(t *testing.T) {
 func TestOwnedTurnEventCoverage(t *testing.T) {
 	root := repositoryRoot(t)
 	rustPath := filepath.Join(root, "crates/jcode-harness-api/src/events.rs")
-	goPath := filepath.Join(root, "sdk/go/session.go")
+	goPath := filepath.Join(goModuleRoot(t), "session.go")
 	rustContracts := rustPublicationContracts(t, rustPath)
 	goSourceBytes, err := os.ReadFile(goPath)
 	if err != nil {
@@ -99,7 +99,7 @@ func TestOwnedTurnEventCoverage(t *testing.T) {
 func TestOwnedTurnEventCoverageRejectsControlledGaps(t *testing.T) {
 	root := repositoryRoot(t)
 	rustPath := filepath.Join(root, "crates/jcode-harness-api/src/events.rs")
-	goSourceBytes, err := os.ReadFile(filepath.Join(root, "sdk/go/session.go"))
+	goSourceBytes, err := os.ReadFile(filepath.Join(goModuleRoot(t), "session.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,6 +310,16 @@ func eventKindForTest(event Event) string {
 
 func repositoryRoot(t *testing.T) string {
 	t.Helper()
+	if root := os.Getenv("JCODE_REPO_ROOT"); root != "" {
+		root, err := filepath.Abs(root)
+		if err != nil {
+			t.Fatalf("resolve JCODE_REPO_ROOT: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(root, "Cargo.toml")); err != nil {
+			t.Fatalf("JCODE_REPO_ROOT does not identify a Jcode checkout: %v", err)
+		}
+		return root
+	}
 	dir, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -321,6 +331,24 @@ func repositoryRoot(t *testing.T) string {
 		parent := filepath.Dir(dir)
 		if parent == dir {
 			t.Skip("protocol parity requires a repository checkout")
+		}
+		dir = parent
+	}
+}
+
+func goModuleRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("go.mod not found")
 		}
 		dir = parent
 	}
