@@ -8,6 +8,20 @@ This document defines the minimum lifecycle boundary required for the Linux priv
 
 Windows supervision, Locus workflow policy, retries, provider selection, automatic fallback, swarm behavior, and hosted execution are out of scope.
 
+## Repository and wire ownership
+
+This repository's `dev` branch is the sole development source for the Go SDK
+implementation, exported APIs, lifecycle behavior, tests, examples, and Go CI.
+Reviewed version tags are release boundaries. The Jcode repository does not
+carry a second Go implementation.
+
+The serialized protocol-v1 Rust wire contract remains owned by
+`crates/jcode-harness-api` in the separate Jcode repository. Compatibility is
+checked through one read-only boundary: Jcode invokes this repository's
+protocol tests with `JCODE_REPO_ROOT` set to its checkout. The Go tests read Go
+source from this module and Rust wire source from that explicit root. No copy,
+projection, mirror, generated payload, submodule, or reverse-sync path exists.
+
 ## Current contract that must remain true
 
 The existing implementation establishes these compatibility constraints:
