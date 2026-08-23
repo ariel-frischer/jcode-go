@@ -532,33 +532,29 @@ go build ./examples/oneshot ./examples/streaming ./examples/private
 
 They require a live jcode bridge only at runtime. `go build` and `go test` do not contact a daemon.
 
-## Canonical validation and publication
+## Development, validation, and releases
 
-The canonical source for this module is `sdk/go/` in Ariel Frischer's Jcode repository. `github.com/ariel-frischer/jcode-go` is the public publication destination. The public repository also owns repository-specific governance, specifications, worktree/task state, automation, and maintainer documentation; those paths are not SDK payload and must never be removed by publication.
+This repository is the sole source for the Go SDK. Changes are developed and integrated on `dev`; reviewed semantic-version tags are the release boundaries consumed by Go modules. There is no embedded implementation in the Jcode repository and no projection, mirror, preview/apply, or reverse-synchronization workflow.
 
-From the Jcode repository root, run the complete non-mutating validation contract:
-
-```bash
-scripts/validate_go_sdk.sh
-```
-
-It reports all seven boundaries even if one fails: formatting, module consistency (`go mod tidy -diff` and `go mod verify`), vet, build, tests, race tests, and Windows amd64 build. CI runs the same command with Go 1.23.x and 1.24.x. Results from a newer local Go toolchain are supplementary rather than matrix evidence.
-
-Publication begins with a deterministic, read-only preview:
+Run the complete repository-owned quality matrix here:
 
 ```bash
-scripts/sync-jcode-go.sh preview \
-  --source sdk/go \
-  --destination /absolute/path/to/jcode-go > /tmp/jcode-go.manifest
+test -z "$(gofmt -l .)"
+go mod tidy -diff
+go mod verify
+go vet ./...
+go build ./...
+go test ./... -count=1
+go test -race ./... -count=1
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./...
 ```
 
-Review the timestamp-free manifest and verify its source/destination fingerprints, named include/protect rules, exact operations, and retained exclusions. Preview is also the default mode and changes neither tree. A future explicitly authorized publication may apply that exact reviewed manifest only while both inputs remain unchanged:
+CI runs the supported Go 1.23.x and 1.24.x matrix. Results from another local toolchain are supplementary.
+
+The separate Jcode repository remains the authoritative Rust protocol-v1 wire source in `crates/jcode-harness-api`. Validate this SDK checkout against an intended Jcode revision by running from that Jcode checkout:
 
 ```bash
-scripts/sync-jcode-go.sh apply \
-  --source sdk/go \
-  --destination /absolute/path/to/jcode-go \
-  --manifest /tmp/jcode-go.manifest
+scripts/validate_jcode_go_compat.sh --jcode-go-dir /absolute/path/to/jcode-go
 ```
 
-Apply rejects stale, malformed, unsafe, dirty, wrong-branch, or wrong-repository inputs before writing. Preview and validation alone do not authorize live publication. Applying the reviewed manifest, committing the public repository, and pushing `main` each require explicit maintainer approval.
+That command sets `JCODE_REPO_ROOT` for this repository's protocol parity tests, uses read-only module mode, and leaves both checkouts unchanged. Tagging and publishing a release still require explicit maintainer authorization.

@@ -10,6 +10,13 @@
 - Current SDK stability program: `docs/sdk-stability-plan.md`
 - Current lifecycle architecture: `docs/architecture.md`
 
+## Source ownership
+
+- This repository's `dev` branch is the sole Go SDK development source. Version tags are release boundaries; `main` is not a separate implementation authority.
+- The Jcode repository owns the Rust protocol-v1 wire contract in `crates/jcode-harness-api`, not a second Go implementation.
+- Cross-repository compatibility is read-only: from Jcode, run `scripts/validate_jcode_go_compat.sh --jcode-go-dir /absolute/path/to/jcode-go`.
+- Do not add projection, mirror, preview/apply, reverse-sync, generated-copy, vendored-copy, or submodule workflows.
+
 ## Scope and design
 
 - Keep public changes minimal, additive, and Go-idiomatic.
@@ -23,7 +30,7 @@
 - Perform implementation in the dedicated branch and worktree assigned by the coordinator.
 - Preserve unrelated changes and stage explicit files only.
 - Do not use rebase, reset, amend, squash, force-push, `git stash`, `git add .`, or `git add -A`.
-- Merge the latest `origin/main` into the worker branch before final validation when the coordinator requests a handoff.
+- Merge the latest `origin/dev` into the worker branch before final validation when the coordinator requests a handoff.
 
 ## Explicit orchestrator boundary
 
