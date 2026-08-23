@@ -17,7 +17,7 @@ import (
 // the canonical Rust harness contract. It intentionally reads source rather
 // than generated output so it works in a checkout without Rust build artifacts.
 func TestRustSchemaParity(t *testing.T) {
-	root := repositoryRoot(t)
+	root := jcodeRepositoryRoot(t)
 	for _, tc := range []struct {
 		file string
 		name string
@@ -78,9 +78,9 @@ func TestProtocolFixtureParity(t *testing.T) {
 // so this gate checks the canonical source seams directly: Rust's contract
 // match, the Go decoder cases, and the Go semantic-class switch.
 func TestOwnedTurnEventCoverage(t *testing.T) {
-	root := repositoryRoot(t)
+	root := jcodeRepositoryRoot(t)
 	rustPath := filepath.Join(root, "crates/jcode-harness-api/src/events.rs")
-	goPath := filepath.Join(root, "sdk/go/session.go")
+	goPath := filepath.Join(sdkModuleRoot(t), "session.go")
 	rustContracts := rustPublicationContracts(t, rustPath)
 	goSourceBytes, err := os.ReadFile(goPath)
 	if err != nil {
@@ -97,9 +97,9 @@ func TestOwnedTurnEventCoverage(t *testing.T) {
 }
 
 func TestOwnedTurnEventCoverageRejectsControlledGaps(t *testing.T) {
-	root := repositoryRoot(t)
+	root := jcodeRepositoryRoot(t)
 	rustPath := filepath.Join(root, "crates/jcode-harness-api/src/events.rs")
-	goSourceBytes, err := os.ReadFile(filepath.Join(root, "sdk/go/session.go"))
+	goSourceBytes, err := os.ReadFile(filepath.Join(sdkModuleRoot(t), "session.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,8 +308,21 @@ func eventKindForTest(event Event) string {
 	}
 }
 
-func repositoryRoot(t *testing.T) string {
+// jcodeRepositoryRoot locates the separate Jcode repository that owns the Rust
+// wire contract. The SDK source remains in this module; JCODE_REPO_ROOT is the
+// explicit cross-repository integration boundary.
+func jcodeRepositoryRoot(t *testing.T) string {
 	t.Helper()
+	if root := os.Getenv("JCODE_REPO_ROOT"); root != "" {
+		root, err := filepath.Abs(root)
+		if err != nil {
+			t.Fatalf("resolve JCODE_REPO_ROOT: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(root, "Cargo.toml")); err != nil {
+			t.Fatalf("JCODE_REPO_ROOT does not identify a Jcode checkout: %v", err)
+		}
+		return root
+	}
 	dir, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -321,6 +334,30 @@ func repositoryRoot(t *testing.T) string {
 		parent := filepath.Dir(dir)
 		if parent == dir {
 			t.Skip("protocol parity requires a repository checkout")
+		}
+		dir = parent
+	}
+}
+
+// sdkModuleRoot locates this jcode-go checkout independently of the Jcode wire
+// repository. Keeping these roots separate prevents parity validation from
+// requiring or recreating an embedded sdk/go source tree.
+func sdkModuleRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if module, err := os.ReadFile(filepath.Join(dir, "go.mod")); err == nil {
+			if regexp.MustCompile(`(?m)^module[[:space:]]+github\.com/ariel-frischer/jcode-go[[:space:]]*$`).Match(module) {
+				return dir
+			}
+			t.Fatalf("go.mod at %s is not the jcode-go module", dir)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("go.mod not found")
 		}
 		dir = parent
 	}
