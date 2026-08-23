@@ -129,6 +129,48 @@ for {
 
 `AttachSession` creates the same lightweight typed view for an existing ID. `Session.Send` subscribes before notifying the server and waits for the asynchronous `message_accepted` event. `SendOptions.NoReply` selects fire-and-forget notification semantics. `Session.Send` does not retry because a timeout can leave a mutation with an unknown server-side outcome.
 
+### Session profiles and per-turn safety
+
+Select a named harness profile when creating a session, then apply optional
+limits to an individual send or owned turn:
+
+```go
+session, err := client.CreateSession(ctx, jcode.CreateSessionOptions{
+    WorkingDir: workingDir,
+    Profile:    "review",
+})
+if err != nil { return err }
+
+offset := time.FixedZone("run-offset", -8*60*60)
+deadline := time.Now().Add(30 * time.Minute).In(offset).Format(time.RFC3339)
+options := jcode.SendOptions{
+    MaxTurns:    8,
+    TokenBudget: 16_000,
+    Deadline:    deadline, // future RFC3339 timestamp with an explicit -08:00 offset
+}
+turn, err := session.StartTurn(lifecycleCtx, prompt, options)
+if err != nil {
+    var optionErr *jcode.OptionError
+    if errors.Is(err, jcode.ErrInvalidOptions) && errors.As(err, &optionErr) {
+        return fmt.Errorf("invalid %s option: %w", optionErr.Field, err)
+    }
+    return err
+}
+```
+
+Zero values omit `Profile`, `MaxTurns`, `TokenBudget`, and `Deadline` from the
+protocol payload, preserving legacy request shapes. A non-empty profile must
+contain a non-whitespace character. Limits cannot be negative, and a supplied
+deadline must be a future RFC3339 timestamp with `Z` or a numeric timezone
+offset. Validation errors expose only the safe field name through
+`ErrInvalidOptions` and `OptionError`; rejected values are not included.
+
+The same run-safety fields work with `Session.Send`. Setting `NoReply` still
+selects its existing notification-only behavior. These typed controls do not
+configure provider credentials and require no live provider to validate. Raw
+`Request` and `Notify` payloads remain caller-controlled and bypass typed-option
+validation.
+
 Use `StartTurn` when the caller must own acceptance, ordered events,
 cancellation, and completion as one lifecycle:
 

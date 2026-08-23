@@ -23,6 +23,32 @@ The existing implementation establishes these compatibility constraints:
 
 The current source also exposes gaps that the downstream work addresses. `Session.Send` does not represent the whole turn, local context cancellation does not send protocol `cancel`, ordinary EOF can leave an event subscription waiting for an explicit reconnect, and Unix termination currently signals only the bridge PID before an unbounded reap.
 
+## Typed session metadata validation boundary
+
+The typed session helpers validate their additive request metadata before crossing
+the protocol or lifecycle boundary. `Client.CreateSession` validates `Profile`
+before emitting observations or allocating, encoding, or writing a request.
+`Session.Send` and `Session.StartTurn` validate `MaxTurns`, `TokenBudget`, and
+`Deadline` before allocating or writing a request, creating a subscription, or
+constructing an owned `Turn`. Zero values omit the additive fields and retain the
+legacy request shape. This validation applies only to the typed helpers: raw
+`Request`, `Notify`, and `Subscribe` remain caller-owned, forward-compatible
+protocol access and are neither rewritten nor subjected to typed-option
+validation.
+
+After typed validation succeeds, the existing ownership and lifecycle contracts
+remain authoritative:
+
+- `Session.Send` retains its acceptance-wait and `NoReply` notification semantics.
+- `Turn.Cancel` remains the sole explicit server-cancellation path, and the first
+  serialized terminal signal still records the immutable `TurnResult`.
+- Mutating operations are not retried or replayed after timeout or disconnect,
+  when their server-side outcome may be unknown.
+- `Instance` ownership, attachment, one-time detachment, and bounded cleanup are
+  unchanged.
+- Private-runtime supervision and cleanup remain Linux-only; this metadata
+  validation adds no Windows behavior.
+
 ## Sole ownership
 
 Each responsibility has exactly one owner.
