@@ -1,0 +1,77 @@
+plan:
+  branch: "agent/jcode-go-jqp"
+  created: "2026-08-23"
+  spec_path: "specs/074-harness-compatibility-typed-errors/spec.yaml"
+
+summary: |
+  Preserve the released typed option and protocol-v1 wire mapping already proven compatible
+  with canonical jcode-8on commit c7991d8cf. Close the SDK-only diagnostic gap by returning
+  the existing EventError value when CreateSession receives an error reply and when
+  acceptance-wait Session.Send observes an error before message_accepted. Add controlled-peer
+  tests first that prove errors.As behavior, redaction, and same-connection recovery. Do not
+  change StartTurn, raw APIs, request encoding, lifecycle ownership, or option validation.
+
+technical_context:
+  language: "Go 1.23"
+  project_type: "library"
+  primary_dependencies:
+    - name: "Go standard library"
+      purpose: "errors.As, context control, deterministic testing, and existing JSON encoding"
+    - name: "module-local protocol package"
+      purpose: "Decode protocol.Error without exposing raw frames"
+  testing:
+    framework: "Go testing package"
+    approach: "Controlled socket peer tests fail first, minimal EventError returns make them pass, then focused/race/full and corrected-harness validation."
+  constraints:
+    - "Keep EventError additive and reuse its existing Code, Message, and ProviderCode fields."
+    - "Preserve numeric JSON max_turns/token_budget, string profile/deadline, and omission."
+    - "Preserve Send no-reply, acceptance, StartTurn, cancellation, raw APIs, and ownership."
+    - "Never include raw frames, credentials, prompts, responses, or private session IDs in diagnostics."
+
+constitution_check:
+  gates:
+    - name: "Protocol v1 Compatibility and Minimal Additive APIs"
+      status: "PASS"
+      notes: "Only two typed error return sites change; wire payloads and raw APIs remain untouched."
+    - name: "Redacted Typed Errors and Observability"
+      status: "PASS"
+      notes: "Reuses EventError and verifies bounded safe fields without raw payload exposure."
+    - name: "Race-Safe Concurrency and Subscription Isolation"
+      status: "PASS"
+      notes: "No concurrency structure changes; race tests cover affected session paths."
+    - name: "Explicit Orchestrator Boundary"
+      status: "PASS"
+      notes: "Work stays in the assigned worktree; no push, merge, release, or provider mutation."
+
+research_findings:
+  decisions:
+    - topic: "Server error type"
+      decision: "Reuse EventError for protocol.Error returned by typed session APIs."
+      rationale: "It already provides stable errors.As inspection and is used by typed streams and owned turns; adding another exported error type would duplicate the same safe fields."
+    - topic: "Wire mapping"
+      decision: "Make no mapping changes."
+      rationale: "Canonical jcode-8on now accepts the released numeric Go fields, and 45 focused SDK mapping tests pass."
+    - topic: "Connection recovery"
+      decision: "Test a rejection followed by success on the same controlled Client."
+      rationale: "The original live failure appeared as a disconnect; reusable-connection evidence is acceptance-critical."
+
+implementation:
+  files:
+    - path: "session.go"
+      changes: "Return EventError instead of formatted strings at CreateSession and acceptance-wait Send protocol error boundaries."
+    - path: "session_options_test.go"
+      changes: "Add failing typed error and same-connection recovery tests using existing controlled peer fixtures."
+    - path: "specs/074-harness-compatibility-typed-errors/"
+      changes: "Record required Autospec specification, plan, and tasks."
+
+validation:
+  focused:
+    - "go test . -run 'Test(CreateSession|Send).*Typed.*Error' -count=1"
+    - "go test . -run 'Test(CreateSessionProfileMapping|SendSafetyOptionsMapping|LegacyTypedSessionCallsPreserveExactPayloads)' -count=1"
+  race:
+    - "go test -race . -run 'Test(CreateSession|Send|StartTurn)' -count=1"
+  full:
+    - "go test ./... -count=1"
+    - "git diff --check"
+  integration:
+    - "Use canonical jcode-8on commit c7991d8cf built artifacts or an isolated built bridge/daemon to prove profile recovery and one safety budget through public Go SDK."

@@ -1,0 +1,92 @@
+feature:
+  branch: "agent/jcode-go-jqp"
+  created: "2026-08-23"
+  status: "Approved"
+  input: "Restore released Go SDK compatibility with the corrected Jcode harness contract from jcode-8on while preserving existing profile and numeric safety-field mapping. Return actionable typed errors for create_session and acceptance-wait send_message server rejections, keep the connection reusable, preserve protocol-v1 raw APIs and owned Turn behavior, and prove the public SDK against the corrected isolated harness."
+
+user_stories:
+  - id: "US-001"
+    title: "Receive typed session creation errors"
+    priority: "P1"
+    as_a: "Go SDK consumer"
+    i_want: "unknown profile and other create-session server rejections to support errors.As"
+    so_that: "automation can diagnose invalid requests without parsing strings or losing the connection"
+    acceptance_scenarios:
+      - given: "the harness rejects create_session with InvalidRequest"
+        when: "Client.CreateSession returns"
+        then: "the error is an EventError with the safe code/message and the connection can serve a later successful request"
+  - id: "US-002"
+    title: "Receive typed acceptance-wait errors"
+    priority: "P1"
+    as_a: "Go SDK consumer"
+    i_want: "pre-acceptance send_message errors to use the same typed error contract"
+    so_that: "invalid safety controls are actionable without changing Send semantics"
+    acceptance_scenarios:
+      - given: "the harness emits a session error before message_accepted"
+        when: "Session.Send waits for acceptance"
+        then: "Send returns EventError and the client remains usable"
+  - id: "US-003"
+    title: "Preserve the released wire contract"
+    priority: "P1"
+    as_a: "existing jcode-go v0.1.6 caller"
+    i_want: "named profiles, numeric limits, deadline strings, omission, raw APIs, and owned turns to remain unchanged"
+    so_that: "the harness correction requires no caller migration"
+    acceptance_scenarios:
+      - given: "existing typed options"
+        when: "requests are encoded"
+        then: "profile is a string, max_turns/token_budget are JSON numbers, deadline is a string, and zero values are omitted"
+
+requirements:
+  functional:
+    - id: "FR-001"
+      description: "CreateSession MUST return EventError for protocol.Error replies."
+      acceptance_criteria: "errors.As exposes code and bounded message; errors contain no raw frames, credentials, prompts, responses, or private session identifiers."
+    - id: "FR-002"
+      description: "Acceptance-wait Session.Send MUST return EventError for session protocol.Error events before acceptance."
+      acceptance_criteria: "The existing acceptance/no-reply return points and raw APIs remain unchanged."
+    - id: "FR-003"
+      description: "A typed server rejection MUST NOT disconnect or poison the client connection."
+      acceptance_criteria: "A controlled peer rejects one request and a later request succeeds on the same client."
+    - id: "FR-004"
+      description: "The existing Profile, MaxTurns, TokenBudget, and Deadline public shapes and JSON encoding MUST remain unchanged."
+      acceptance_criteria: "Existing 45-case mapping baseline and legacy omission tests pass unchanged."
+    - id: "FR-005"
+      description: "Corrected-harness integration MUST cover valid named profile, unknown-profile typed recovery, individual and combined safety fields, omission, cancellation, and an enforced budget."
+      acceptance_criteria: "Isolated committed jcode-8on binaries or equivalent controlled harness evidence pass without credential leakage."
+  non_functional:
+    - id: "NFR-001"
+      category: "compatibility"
+      description: "Public changes are minimal and additive; protocol-v1 raw APIs and Turn ownership contracts remain stable."
+    - id: "NFR-002"
+      category: "security"
+      description: "Errors, observations, tests, and receipts remain redacted and bounded."
+    - id: "NFR-003"
+      category: "quality"
+      description: "Focused tests fail before implementation, then focused/race/full validation passes."
+
+success_criteria:
+  measurable_outcomes:
+    - id: "SC-001"
+      description: "CreateSession and acceptance-wait Send expose typed server errors."
+      metric: "errors.As EventError scenarios"
+      target: "100% pass"
+    - id: "SC-002"
+      description: "Released wire and lifecycle behavior remains compatible."
+      metric: "existing mapping, raw, cancellation, and ownership suites"
+      target: "100% pass"
+    - id: "SC-003"
+      description: "Corrected public harness path works end to end."
+      metric: "isolated and approved free-model smoke scenarios"
+      target: "named profile plus at least one enforced budget proven"
+
+constraints:
+  - "Reuse jcode-8on commit c7991d8cf as the canonical contract receipt."
+  - "Do not change option field types or encode limits as strings."
+  - "Do not add profile resolution, provider credentials, max_tool_steps, retries, replay, push, or release."
+  - "No Windows implementation expansion."
+
+out_of_scope:
+  - "Canonical harness implementation"
+  - "Autospec product changes"
+  - "Provider configuration or credentials"
+  - "Push, release, or SDK publication"

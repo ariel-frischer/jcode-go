@@ -1,0 +1,87 @@
+tasks:
+  branch: "agent/jcode-go-jqp"
+  created: "2026-08-23"
+  spec_path: "specs/074-harness-compatibility-typed-errors/spec.yaml"
+  plan_path: "specs/074-harness-compatibility-typed-errors/plan.yaml"
+
+summary:
+  total_tasks: 7
+  total_phases: 4
+  estimated_complexity: "medium"
+
+phases:
+  - number: 1
+    title: "Contract and fixtures"
+    tasks:
+      - id: "T001"
+        title: "Freeze canonical and released wire compatibility"
+        status: "Completed"
+        type: "setup"
+        file_path: "session_options_test.go"
+        dependencies: []
+        acceptance_criteria:
+          - "Canonical jcode-8on c7991d8cf accepts numeric limits and named profile strings."
+          - "Existing 45-case SDK profile/safety mapping baseline passes unchanged."
+      - id: "T002"
+        title: "Add failing typed CreateSession rejection and recovery test"
+        status: "Completed"
+        type: "test"
+        file_path: "session_options_test.go"
+        dependencies: ["T001"]
+        acceptance_criteria:
+          - "errors.As exposes EventError after InvalidRequest."
+          - "A later CreateSession succeeds on the same client."
+          - "The error omits prohibited synthetic secrets and raw protocol data."
+  - number: 2
+    title: "Typed session errors"
+    tasks:
+      - id: "T003"
+        title: "Return EventError from CreateSession"
+        status: "Completed"
+        type: "implementation"
+        file_path: "session.go"
+        dependencies: ["T002"]
+        acceptance_criteria:
+          - "CreateSession returns EventError with safe code/message/provider code."
+      - id: "T004"
+        title: "Add failing typed acceptance-wait Send rejection and recovery test"
+        status: "Completed"
+        type: "test"
+        file_path: "session_options_test.go"
+        dependencies: ["T003"]
+        acceptance_criteria:
+          - "Session.Send returns EventError before acceptance and a later send succeeds."
+      - id: "T005"
+        title: "Return EventError from acceptance-wait Send"
+        status: "Completed"
+        type: "implementation"
+        file_path: "session.go"
+        dependencies: ["T004"]
+        acceptance_criteria:
+          - "Send reuses EventError without changing no-reply or acceptance behavior."
+  - number: 3
+    title: "Compatibility and integration"
+    tasks:
+      - id: "T006"
+        title: "Run focused, race, legacy, cancellation, and corrected-harness integration checks"
+        status: "Completed"
+        type: "test"
+        file_path: "repository"
+        dependencies: ["T005"]
+        acceptance_criteria:
+          - "Focused typed-error tests and 45-case mapping baseline pass."
+          - "Race and full Go suites pass."
+          - "Corrected isolated harness proves profile recovery and one enforced budget."
+  - number: 4
+    title: "Polish and handoff"
+    tasks:
+      - id: "T007"
+        title: "Review, document evidence, report risk, and commit explicit files"
+        status: "Completed"
+        type: "documentation"
+        file_path: "repository"
+        dependencies: ["T006"]
+        acceptance_criteria:
+          - "gofmt and git diff --check pass."
+          - "Session report includes Medium risk, blast radius, rollback, and review action."
+          - "Scoped files are explicitly staged and committed; worktree is clean."

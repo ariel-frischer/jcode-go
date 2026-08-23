@@ -61,9 +61,9 @@ type sendMessageFields struct {
 	Deadline    string      `json:"deadline,omitempty"`
 }
 
-// EventError reports a terminal error emitted by the harness for a session
-// turn. It preserves the protocol code and message for callers that need to
-// classify provider failures without inspecting raw protocol frames.
+// EventError reports a typed error emitted by the harness. It preserves the
+// protocol code and safe message fields for callers that need to classify
+// request or provider failures without inspecting raw protocol frames.
 type EventError struct {
 	Code         string
 	Message      string
@@ -112,7 +112,11 @@ func (c *Client) CreateSession(ctx context.Context, options CreateSessionOptions
 	}
 	if value, ok := frame.Event.(protocol.Error); ok {
 		c.emit(Observation{Kind: "create_session_error", Request: "create_session", Error: value.Code})
-		return Session{}, fmt.Errorf("%s: %s", value.Code, value.Message)
+		return Session{}, EventError{
+			Code:         value.Code,
+			Message:      value.Message,
+			ProviderCode: value.ProviderCode,
+		}
 	}
 	fields, ok := protocol.FieldsJSON(frame.Event)
 	if !ok {
@@ -193,7 +197,11 @@ func (s Session) Send(ctx context.Context, content string, options SendOptions) 
 		}
 		if event.Kind == "error" {
 			if value, ok := event.Frame.Event.(protocol.Error); ok {
-				return fmt.Errorf("%s: %s", value.Code, value.Message)
+				return EventError{
+					Code:         value.Code,
+					Message:      value.Message,
+					ProviderCode: value.ProviderCode,
+				}
 			}
 		}
 	}
