@@ -12,7 +12,9 @@
 
 ## Source ownership
 
-- This repository's `dev` branch is the sole Go SDK development source. Version tags are release boundaries; `main` is not a separate implementation authority.
+- `dev` is the sole Go SDK development and integration branch. All implementation, fixes, and release preparation land on `dev` first.
+- `main` is the stable production branch. Advance it only by promoting a validated `dev` commit with preserved ancestry; never develop, hotfix, or maintain an independent implementation on `main`.
+- Immutable version tags are release boundaries and must point at the exact promoted `main` commit. Release in this order: validate `dev`, promote that commit to `main`, then tag it.
 - The Jcode repository owns the Rust protocol-v1 wire contract in `crates/jcode-harness-api`, not a second Go implementation.
 - Cross-repository compatibility is read-only: from Jcode, run `scripts/validate_jcode_go_compat.sh --jcode-go-dir /absolute/path/to/jcode-go`.
 - Do not add projection, mirror, preview/apply, reverse-sync, generated-copy, vendored-copy, or submodule workflows.
