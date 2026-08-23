@@ -172,8 +172,7 @@ phases:
             - "Documentation states that raw protocol ownership, Session.Send semantics, Turn cancellation and first-terminal behavior, retry policy, Instance ownership, and Linux scope are unchanged."
         - id: "T011"
           title: "Run scoped polish, deterministic, race, and full validation"
-          status: "Blocked"
-          blocked_reason: Full go test ./... -count=1 is blocked by the managed sandbox denying Unix socket listen with setsockopt operation not permitted; focused, repeated, race, build, vet, diff, and artifact checks otherwise pass.
+          status: "Completed"
           type: "test"
           parallel: false
           story_id: null
