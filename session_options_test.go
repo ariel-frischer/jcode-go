@@ -416,6 +416,105 @@ func TestCreateSessionRejectsBlankProfileBeforeSideEffects(t *testing.T) {
 	}
 }
 
+func TestCreateSessionReturnsTypedServerErrorAndKeepsConnectionUsable(t *testing.T) {
+	fixture := newSessionOptionFixture(t)
+	defer fixture.close()
+
+	serverDone := make(chan error, 1)
+	go func() {
+		first, err := receiveSessionOptionRequest(fixture.server)
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if err := fixture.server.Send(mustServerFrame(t, first.id, "error", map[string]any{
+			"code":    "invalid_request",
+			"message": "unknown configured profile",
+		})); err != nil {
+			serverDone <- err
+			return
+		}
+
+		second, err := receiveSessionOptionRequest(fixture.server)
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		serverDone <- fixture.server.Send(mustServerFrame(t, second.id, "attached", map[string]any{
+			"session": map[string]any{"session_id": "fixture-session", "status": "active"},
+		}))
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, err := fixture.client.CreateSession(ctx, CreateSessionOptions{Profile: "missing"})
+	var eventErr EventError
+	if !errors.As(err, &eventErr) {
+		t.Fatalf("CreateSession error=%T, want EventError", err)
+	}
+	if eventErr.Code != "invalid_request" || eventErr.Message != "unknown configured profile" {
+		t.Fatalf("CreateSession EventError=%+v", eventErr)
+	}
+	if strings.Contains(err.Error(), "fixture-session") {
+		t.Fatalf("CreateSession error exposed private session identifier")
+	}
+
+	if _, err := fixture.client.CreateSession(ctx, CreateSessionOptions{}); err != nil {
+		t.Fatalf("CreateSession after rejection: %v", err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatalf("create_session recovery peer: %v", err)
+	}
+}
+
+func TestSendReturnsTypedServerErrorAndKeepsConnectionUsable(t *testing.T) {
+	fixture := newSessionOptionFixture(t)
+	defer fixture.close()
+
+	serverDone := make(chan error, 1)
+	go func() {
+		if _, err := receiveSessionOptionRequest(fixture.server); err != nil {
+			serverDone <- err
+			return
+		}
+		if err := fixture.server.Send(mustEventFrame(t, "error", map[string]any{
+			"session_id": "fixture-session",
+			"code":       "invalid_request",
+			"message":    "invalid invocation safety",
+		})); err != nil {
+			serverDone <- err
+			return
+		}
+
+		if _, err := receiveSessionOptionRequest(fixture.server); err != nil {
+			serverDone <- err
+			return
+		}
+		serverDone <- fixture.server.Send(mustEventFrame(t, "message_accepted", map[string]any{
+			"session_id": "fixture-session",
+		}))
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	session := Session{client: fixture.client, ID: "fixture-session"}
+	err := session.Send(ctx, "bounded", SendOptions{MaxTurns: 1})
+	var eventErr EventError
+	if !errors.As(err, &eventErr) {
+		t.Fatalf("Send error=%T, want EventError", err)
+	}
+	if eventErr.Code != "invalid_request" || eventErr.Message != "invalid invocation safety" {
+		t.Fatalf("Send EventError=%+v", eventErr)
+	}
+
+	if err := session.Send(ctx, "retry-after-correction", SendOptions{}); err != nil {
+		t.Fatalf("Send after rejection: %v", err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatalf("send recovery peer: %v", err)
+	}
+}
+
 func TestSendSafetyOptionsMapping(t *testing.T) {
 	const (
 		content        = "fixture-content"
