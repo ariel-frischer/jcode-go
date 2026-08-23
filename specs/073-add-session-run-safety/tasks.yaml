@@ -1,0 +1,274 @@
+tasks:
+    branch: "agent/jcode-go-bfj"
+    created: "2026-08-22"
+    spec_path: "specs/073-add-session-run-safety/spec.yaml"
+    plan_path: "specs/073-add-session-run-safety/plan.yaml"
+summary:
+    total_tasks: 11
+    total_phases: 6
+    parallel_opportunities: 2
+    estimated_complexity: "medium"
+phases:
+    - number: 1
+      title: "Setup"
+      purpose: "Establish dedicated deterministic fixtures for the typed option contract without changing production behavior."
+      tasks:
+        - id: "T001"
+          title: "Create controlled option request and side-effect fixtures"
+          status: "Completed"
+          type: "setup"
+          parallel: false
+          story_id: null
+          file_path: "session_options_test.go"
+          dependencies: []
+          acceptance_criteria:
+            - "Same-package helpers reuse the existing controlled in-memory protocol peer and can capture decoded request keys and values for create_session and send_message."
+            - "Fixtures can snapshot outgoing request or notification writes, subscriptions, observations, and owned-turn creation so invalid calls can assert zero deltas."
+            - "Test diagnostics use only synthetic field and lifecycle labels and never print prompts, responses, credentials, raw frames, or private session identifiers."
+    - number: 2
+      title: "Foundational"
+      purpose: "Define and implement the shared stable, redacted validation error contract used by session and turn options."
+      tasks:
+        - id: "T002"
+          title: "Specify the typed option error contract"
+          status: "Completed"
+          type: "test"
+          parallel: false
+          story_id: null
+          file_path: "session_options_test.go"
+          dependencies:
+            - "T001"
+          acceptance_criteria:
+            - "Tests require every option validation failure to satisfy errors.Is(err, ErrInvalidOptions)."
+            - "Tests require errors.As to expose OptionError with only a stable safe Field classification."
+            - "Tests prove OptionError text and wrapped errors omit rejected profile and deadline values and all prohibited sensitive data."
+        - id: "T003"
+          title: "Add the stable redacted option error surface"
+          status: "Completed"
+          type: "implementation"
+          parallel: false
+          story_id: null
+          file_path: "session.go"
+          dependencies:
+            - "T002"
+          acceptance_criteria:
+            - "ErrInvalidOptions is an exported stable sentinel and OptionError supports errors.Is and errors.As through an Unwrap method."
+            - "OptionError identifies only the invalid option field and never stores or formats the rejected value."
+            - "The new public surface is additive and does not change any existing method signature or raw protocol behavior."
+    - number: 3
+      title: "User Story 1 - Create a session with a named profile"
+      purpose: "Allow typed session creation to select a valid named profile while preserving the exact zero-value request."
+      story_reference: "US-001"
+      independent_test: "Capture create_session for zero-value options, a named profile, and a whitespace-only profile; compare exact fields and verify invalid input causes no observation or protocol activity."
+      tasks:
+        - id: "T004"
+          title: "Test profile omission, exact mapping, and pre-write rejection"
+          status: "Completed"
+          type: "test"
+          parallel: false
+          story_id: "US-001"
+          file_path: "session_options_test.go"
+          dependencies:
+            - "T003"
+          acceptance_criteria:
+            - "A zero-value CreateSessionOptions request has the legacy event and field set and contains no profile key."
+            - "A valid non-blank Profile is transmitted unchanged exactly once, including caller whitespace that is not entirely blank."
+            - "A non-empty whitespace-only Profile returns OptionError for profile before request allocation, observation emission, or protocol write."
+        - id: "T005"
+          title: "Implement additive profile validation and create_session mapping"
+          status: "Completed"
+          type: "implementation"
+          parallel: false
+          story_id: "US-001"
+          file_path: "session.go"
+          dependencies:
+            - "T004"
+          acceptance_criteria:
+            - "CreateSessionOptions exposes additive Profile string while WorkingDir and all existing call sites remain source-compatible."
+            - "Empty Profile is omitted, whitespace-only non-empty Profile is rejected, and every other valid Profile is encoded unchanged with omitempty semantics."
+            - "Client.CreateSession validates before create_session_start observation and request construction, with legacy zero-value payload and response behavior unchanged."
+    - number: 4
+      title: "User Story 2 - Bound an individual turn"
+      purpose: "Apply optional maximum turns, token budget, and an absolute RFC3339 deadline consistently to normal sends and owned turns."
+      story_reference: "US-002"
+      independent_test: "Capture Session.Send, NoReply Send, and Session.StartTurn with zero, individual, and combined safety values; assert exact fields and prove every invalid value fails before writes, subscriptions, or Turn creation."
+      tasks:
+        - id: "T006"
+          title: "Test run-safety mapping and side-effect-free validation"
+          status: "Completed"
+          type: "test"
+          parallel: false
+          story_id: "US-002"
+          file_path: "session_options_test.go"
+          dependencies:
+            - "T003"
+          acceptance_criteria:
+            - "Zero safety values omit max_turns, token_budget, and deadline on Session.Send and Session.StartTurn while preserving content, copied images, session ID, and no_reply behavior."
+            - "Positive limits and future RFC3339 deadlines using both Z and numeric offsets map exactly, independently and together, through acceptance-wait Send, NoReply Send, and StartTurn."
+            - "Negative limits, malformed deadlines, timezone-less deadlines, and expired deadlines return the correct redacted OptionError before any request, notification, subscription, observation, or owned Turn is created."
+            - "Valid deadline text is asserted byte-for-byte on the wire, and fixed future and past fixtures make the matrix deterministic without a live provider."
+        - id: "T007"
+          title: "Implement shared typed send_message safety handling"
+          status: "Completed"
+          type: "implementation"
+          parallel: false
+          story_id: "US-002"
+          file_path: "session.go"
+          dependencies:
+            - "T006"
+          acceptance_criteria:
+            - "SendOptions additively exposes MaxTurns int, TokenBudget int, and Deadline string; zero values are omitted and negative numeric values are rejected."
+            - "Deadline validation captures submission-entry time once, uses time.Parse(time.RFC3339), requires a future instant with Z or a numeric offset, and preserves the original validated string."
+            - "One private send_message payload builder is used by Session.Send and Session.StartTurn after validation, without routing raw protocol calls through typed validation."
+            - "Validation precedes request allocation, observations, subscriptions, Turn construction, and writes while the existing Send acceptance, NoReply, and StartTurn subscription-before-write control flow remains otherwise unchanged."
+    - number: 5
+      title: "User Story 3 - Retain compatibility and ownership contracts"
+      purpose: "Demonstrate that additive typed options do not change legacy payloads, raw protocol control, or owned Turn lifecycle semantics."
+      story_reference: "US-003"
+      independent_test: "Run deterministic raw, zero-value typed, acceptance, notification-only, and owned-turn lifecycle cases against the controlled protocol peer."
+      tasks:
+        - id: "T008"
+          title: "Add legacy, raw-bypass, and owned-turn compatibility coverage"
+          status: "Completed"
+          type: "test"
+          parallel: false
+          story_id: "US-003"
+          file_path: "session_options_test.go"
+          dependencies:
+            - "T005"
+            - "T007"
+          acceptance_criteria:
+            - "Legacy zero-value CreateSession and Send calls serialize exactly the pre-feature fields and retain their existing return points and errors."
+            - "A raw Request or Notify carrying caller-controlled future or typed-invalid fields is transmitted unchanged and bypasses OptionError validation."
+            - "Valid StartTurn safety fields preserve subscription-before-write ordering, accepted and ordered event delivery, cancellation behavior, wait-context isolation, and immutable first-terminal results."
+            - "No typed option or captured typed payload exposes max_tool_steps, provider credentials, provider selection, authentication, retry, replay, or reconnect behavior."
+    - number: 6
+      title: "Polish & Cross-Cutting Concerns"
+      purpose: "Document the public boundary and complete deterministic, race-enabled, and repository-wide handoff evidence."
+      tasks:
+        - id: "T009"
+          title: "Document typed profile and run-safety usage"
+          status: "Completed"
+          type: "documentation"
+          parallel: true
+          story_id: null
+          file_path: "README.md"
+          dependencies:
+            - "T008"
+          acceptance_criteria:
+            - "README examples show Profile, positive MaxTurns and TokenBudget, and a future explicit-offset RFC3339 Deadline without credentials or live-provider requirements."
+            - "Documentation states zero-value omission, whitespace and deadline validation, errors.Is/errors.As inspection, unchanged NoReply behavior, and raw API non-validation."
+        - id: "T010"
+          title: "Record the typed validation and lifecycle ownership boundary"
+          status: "Completed"
+          type: "documentation"
+          parallel: true
+          story_id: null
+          file_path: "docs/architecture.md"
+          dependencies:
+            - "T008"
+          acceptance_criteria:
+            - "Architecture documentation places typed option validation before protocol and lifecycle side effects."
+            - "Documentation states that raw protocol ownership, Session.Send semantics, Turn cancellation and first-terminal behavior, retry policy, Instance ownership, and Linux scope are unchanged."
+        - id: "T011"
+          title: "Run scoped polish, deterministic, race, and full validation"
+          status: "Blocked"
+          blocked_reason: Full go test ./... -count=1 is blocked by the managed sandbox denying Unix socket listen with setsockopt operation not permitted; focused, repeated, race, build, vet, diff, and artifact checks otherwise pass.
+          type: "test"
+          parallel: false
+          story_id: null
+          file_path: "repository"
+          dependencies:
+            - "T009"
+            - "T010"
+          acceptance_criteria:
+            - "gofmt is applied only to explicitly changed Go files and focused option, typed API, raw protocol, Send, and StartTurn tests pass first."
+            - "The deterministic option matrix passes with -count=10 and focused lifecycle coverage passes with -race."
+            - "go test ./... -count=1 and git diff --check pass, and explicit diff review finds no max_tool_steps, provider credential or authentication fields, sensitive diagnostics, protocol-package edits, Turn implementation edits, Windows work, or unrelated changes."
+            - "Handoff evidence reports scoped files, focused/repeated/race/full validation, residual risk, and readiness for coordinator review without merging, pushing, mutating Beads, or cleaning worktrees."
+dependencies:
+    user_story_order:
+        - story_id: "US-001"
+          depends_on: []
+          blocks:
+            - "US-003"
+        - story_id: "US-002"
+          depends_on: []
+          blocks:
+            - "US-003"
+        - story_id: "US-003"
+          depends_on:
+            - "US-001"
+            - "US-002"
+          blocks: []
+    phase_order:
+        - phase: 1
+          blocks:
+            - 2
+        - phase: 2
+          blocks:
+            - 3
+            - 4
+        - phase: 3
+          blocks:
+            - 5
+        - phase: 4
+          blocks:
+            - 5
+        - phase: 5
+          blocks:
+            - 6
+        - phase: 6
+          blocks: []
+parallel_execution:
+    - phase: 6
+      parallel_groups:
+        - tasks:
+            - "T009"
+            - "T010"
+          rationale: "README usage documentation and architecture ownership documentation modify separate files after compatibility behavior is fixed."
+implementation_strategy:
+    mvp_scope:
+        phases:
+            - 1
+            - 2
+            - 3
+            - 4
+        description: "Shared error contract plus independently tested typed profile selection and per-turn safety controls."
+        validation: "Focused session_options_test.go cases prove omission, exact valid mapping, and pre-side-effect rejection for CreateSession, Send, and StartTurn."
+    incremental_delivery:
+        - milestone: "Validation contract ready"
+          phases:
+            - 1
+            - 2
+          deliverable: "Deterministic request/side-effect fixtures and the stable redacted OptionError contract are available to both behavior increments."
+        - milestone: "MVP complete"
+          phases:
+            - 1
+            - 2
+            - 3
+            - 4
+          deliverable: "All four requested typed controls map and validate consistently without side effects on invalid input."
+        - milestone: "Compatibility proven"
+          phases:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+          deliverable: "Legacy typed payloads, raw protocol freedom, and owned Turn semantics are covered deterministically."
+        - milestone: "Handoff ready"
+          phases:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          deliverable: "Public contracts are documented and focused, repeated, race-enabled, full-suite, formatting, and diff validation evidence is ready for the coordinator."
+_meta:
+    version: "1.0.0"
+    generator: "autospec"
+    generator_version: "autospec dev"
+    created: "2026-08-22T23:56:15Z"
+    artifact_type: "tasks"

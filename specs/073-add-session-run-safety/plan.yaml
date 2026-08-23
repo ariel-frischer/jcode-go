@@ -1,0 +1,334 @@
+plan:
+  branch: "agent/jcode-go-bfj"
+  created: "2026-08-22"
+  spec_path: "specs/073-add-session-run-safety/spec.yaml"
+
+summary: |
+  Extend the existing typed session surface without adding a parallel API. Add
+  Profile to CreateSessionOptions and add MaxTurns, TokenBudget, and Deadline to
+  SendOptions. Keep every field optional through zero-value omission, validate
+  only typed helpers, and preserve the caller's valid profile and RFC3339 deadline
+  text exactly when constructing the protocol v1 payload. Raw Request, Notify,
+  Subscribe, and raw request construction remain untouched.
+
+  Centralize typed option validation and send_message payload construction in
+  session.go so Session.Send and Session.StartTurn cannot drift. Validation runs
+  before request allocation, observations, subscriptions, or Turn construction;
+  valid options then enter the existing Send acceptance/no-reply path or the
+  existing owned-Turn subscription-before-write path unchanged. Expose one
+  redacted typed option error that wraps a stable sentinel, cover exact mapping,
+  omission, every invalid case, side-effect freedom, and legacy compatibility with
+  deterministic controlled-protocol tests, then sync public documentation and run
+  focused, race, repeated, and full validation.
+
+technical_context:
+  language: "Go 1.23"
+  framework: "None"
+  primary_dependencies:
+    - name: "Go standard library"
+      version: "1.23"
+      purpose: "Use context, errors, strings, time.RFC3339 parsing, encoding/json, and the testing package for validation and deterministic fixtures."
+    - name: "github.com/ariel-frischer/jcode-go/protocol"
+      version: "module-local protocol v1"
+      purpose: "Construct additive create_session and send_message RawRequest payloads while preserving raw forward-compatible APIs."
+    - name: "github.com/ariel-frischer/jcode-go/transport"
+      version: "module-local transport"
+      purpose: "Use the existing controlled in-memory protocol peer for request capture and zero-write assertions."
+  storage: "None"
+  testing:
+    framework: "Go testing package"
+    approach: "Write focused table-driven and controlled-peer tests first; assert exact JSON keys and zero request/subscription deltas for invalid options, run focused tests repeatedly and with -race, then run go test ./... -count=1 and git diff --check."
+  target_platform: "Go SDK consumers on the existing protocol v1 surface; Linux private-runtime lifecycle remains the program target and no Windows work is added"
+  project_type: "library"
+  performance_goals: "Validation completes locally before any protocol or lifecycle side effect; zero-value calls add no wire fields; send and owned-turn ordering, bounded queues, cancellation, and first-terminal behavior remain unchanged."
+  constraints:
+    - "Keep public changes minimal, additive, source-compatible, and Go-idiomatic."
+    - "Preserve the exact legacy create_session and send_message payloads when new fields are zero."
+    - "Validate only typed CreateSession, Send, and StartTurn helpers; do not rewrite or reject raw protocol calls."
+    - "Treat empty string and zero numeric values as unspecified; reject whitespace-only supplied profiles and negative numeric values."
+    - "Accept Deadline only when time.Parse(time.RFC3339, value) succeeds, the original text contains the required Z or numeric offset through that grammar, and the parsed instant is in the future at submission entry."
+    - "Preserve valid Profile and Deadline strings exactly on the wire; trimming and parsing are validation-only."
+    - "Perform validation before observation emission, request allocation/write, subscription creation, or Turn construction."
+    - "Preserve Session.Send acceptance waits, notification-only sends, content/images, and existing error behavior."
+    - "Preserve StartTurn subscription-before-write ordering, event delivery, cancellation, and immutable first-terminal results."
+    - "Expose no max_tool_steps, provider credentials, provider selection, retry, replay, reconnect, or Windows runtime changes."
+    - "Errors and tests identify only safe option field/class information and never include supplied values, prompts, responses, frames, credentials, or private session IDs."
+    - "This planning stage writes only the supplied feature artifact and does not commit, mutate Beads, merge, push, or manage worktrees."
+  scale_scope: "Four optional scalar controls on two existing typed option structs and three existing typed entry points; no persistence, service, distributed coordination, or live provider dependency."
+
+constitution_check:
+  constitution_path: ".autospec/constitution.yaml"
+  gates:
+    - name: "Protocol v1 Compatibility and Minimal Additive APIs"
+      status: "PASS"
+      notes: "Adds fields only to existing option structs, preserves zero-value payloads and signatures, and leaves Request, Notify, Subscribe, Session.Send, Session.Events, and raw construction available without typed validation."
+    - name: "Explicit Lifecycle Ownership and Working Directories"
+      status: "PASS"
+      notes: "Profile and per-turn bounds are request metadata only; Client, Session/Turn, Instance, working-directory, and orchestrator ownership remain unchanged."
+    - name: "First-Terminal-Wins Immutable Outcomes"
+      status: "PASS"
+      notes: "Valid StartTurn options feed the current pre-subscription request builder and existing Turn implementation; no terminal producer, synchronization, or result behavior changes."
+    - name: "Distinct Cancellation and Unknown-Outcome Semantics"
+      status: "PASS"
+      notes: "No cancel, retry, replay, wait-context, or lifecycle-context semantics change; invalid options fail before submission and valid mutations retain unknown-outcome behavior after timeout or disconnect."
+    - name: "Redacted Typed Errors and Observability"
+      status: "PASS"
+      notes: "A typed option error wraps a stable sentinel and reports only a safe field classification; it never embeds caller values or protocol content."
+    - name: "Race-Safe Concurrency and Subscription Isolation"
+      status: "PASS"
+      notes: "Validation precedes subscription creation and the shared payload builder does not alter dispatcher, queue, cancellation, close, or single-consumer synchronization; focused race tests protect the lifecycle path."
+    - name: "Bounded and Owned Linux Private-Runtime Cleanup"
+      status: "PASS"
+      notes: "No launch, process supervision, shutdown, owned-path cleanup, PID signaling, or Windows implementation is changed."
+    - name: "Focused, Race, and Public-Path Validation"
+      status: "PASS"
+      notes: "The plan starts with deterministic focused tests, includes zero-side-effect and lifecycle compatibility assertions, a focused -race run, ten repeated focused runs, the full Go suite, and git diff --check."
+    - name: "Explicit Orchestrator Boundary and Execution Policy"
+      status: "PASS"
+      notes: "The SDK adds no workflow, provider, model, fallback, retry, or durable-effect policy, and this planning run stays inside the assigned worktree without Bead or integration mutation."
+
+research_findings:
+  decisions:
+    - topic: "Public option placement and zero-value compatibility"
+      decision: "Add Profile string to CreateSessionOptions and MaxTurns int, TokenBudget int, and Deadline string to SendOptions, all encoded with omitempty only after validation."
+      rationale: "The current API already routes session creation through CreateSessionOptions and both typed turn paths through SendOptions. Additive scalar fields preserve source compatibility and make zero values naturally omit the new protocol keys."
+      alternatives_considered:
+        - "Introduce separate SessionProfileOptions and RunSafetyOptions wrapper structs, which adds nesting and migration friction for only four fields."
+        - "Add new CreateSessionWithProfile or SendWithLimits methods, which duplicates existing lifecycle paths and risks semantic drift."
+    - topic: "Deadline representation and exact wire mapping"
+      decision: "Represent Deadline as a string, validate with time.Parse(time.RFC3339), require the parsed instant to be after a captured submission-entry time, and transmit the original validated string unchanged."
+      rationale: "A string retains the syntax needed to reject malformed and timezone-less input and preserves the caller's explicit Z or numeric offset. time.Time would erase whether the original input carried the required RFC3339 designator and would force normalization."
+      alternatives_considered:
+        - "Use time.Time, which cannot represent malformed input or preserve the caller's original explicit offset text."
+        - "Use context deadlines as the protocol deadline, which conflates local lifecycle cancellation with the server run-safety field."
+    - topic: "Numeric and profile validation semantics"
+      decision: "Treat zero MaxTurns and TokenBudget as unspecified, reject negative values, treat empty Profile as unspecified, reject non-empty profiles whose strings.TrimSpace result is empty, and otherwise preserve profile text exactly."
+      rationale: "This follows the spec's explicit zero-value assumptions while still rejecting every representable supplied non-positive or blank value without adding pointer fields solely to distinguish an explicitly assigned zero."
+      alternatives_considered:
+        - "Use pointer numeric and profile fields to distinguish explicit zero or empty values, which expands caller complexity and is not required by the zero-means-unspecified contract."
+        - "Trim and normalize profile names, which would violate exact caller-supplied mapping."
+    - topic: "Stable redacted validation errors"
+      decision: "Add ErrInvalidOptions plus an exported OptionError carrying only the safe option field; OptionError.Unwrap returns ErrInvalidOptions and Error omits the rejected value."
+      rationale: "Callers receive stable errors.Is and errors.As inspection in line with the constitution without parsing messages or exposing prompts, identifiers, deadlines, profile names, or other caller data."
+      alternatives_considered:
+        - "Return ad hoc fmt.Errorf strings, which are not a stable classification."
+        - "Create one sentinel per validation rule, which adds unnecessary public surface and couples consumers to internal reasons."
+    - topic: "Shared mapping and side-effect boundary"
+      decision: "Keep validation and private payload structs in session.go, validate before any Client or Turn side effect, and use one private send-message request builder for both Session.Send and Session.StartTurn."
+      rationale: "The current implementation duplicates send_message payload construction. One builder guarantees identical safety-field mapping while each public method retains its established no-reply, acceptance, and owned-turn control flow."
+      alternatives_considered:
+        - "Duplicate fields and validation in both methods, which creates avoidable drift."
+        - "Move validation into protocol.NewRawRequest, which would incorrectly constrain raw forward-compatible callers."
+    - topic: "Test and documentation placement"
+      decision: "Add a focused session_options_test.go using existing package-level controlled peer helpers, retain existing compatibility suites, and update README.md plus docs/architecture.md with the additive option and validation boundary."
+      rationale: "A dedicated test file keeps the matrix reviewable while same-package fixtures can assert request fields, request IDs, subscription IDs, and lifecycle behavior without live services. Existing docs are the canonical typed API and lifecycle contracts."
+      alternatives_considered:
+        - "Use live provider acceptance, which is unnecessary, costly, and explicitly out of scope."
+        - "Scatter the full matrix across typed_api_test.go and turn_test.go, which obscures the feature's exact omission and side-effect contract."
+
+data_model:
+  entities:
+    - name: "CreateSessionOptions"
+      description: "Existing typed session-creation input extended with optional profile selection."
+      fields:
+        - name: "WorkingDir"
+          type: "string"
+          description: "Existing harness session working directory."
+          constraints: "Behavior and json mapping remain unchanged; empty remains omitted."
+        - name: "Profile"
+          type: "string"
+          description: "Optional named harness profile mapped to profile."
+          constraints: "Empty means omitted; non-empty whitespace-only is invalid; valid text is transmitted unchanged."
+      relationships:
+        - target: "create_session request"
+          type: "one-to-one"
+          description: "One validated typed option value maps to one optional protocol field."
+    - name: "SendOptions"
+      description: "Existing typed send input extended with optional per-turn safety limits shared by normal sends and owned turns."
+      fields:
+        - name: "Images"
+          type: "[][2]string"
+          description: "Existing image payload copied before encoding."
+          constraints: "Behavior and omission remain unchanged."
+        - name: "NoReply"
+          type: "bool"
+          description: "Existing notification-only selection for Session.Send."
+          constraints: "StartTurn continues to reject true with ErrTurnNoReply; false remains omitted."
+        - name: "MaxTurns"
+          type: "int"
+          description: "Optional maximum-turn limit mapped to max_turns."
+          constraints: "Zero means omitted; negative is invalid; positive is transmitted exactly."
+        - name: "TokenBudget"
+          type: "int"
+          description: "Optional token budget mapped to token_budget."
+          constraints: "Zero means omitted; negative is invalid; positive is transmitted exactly."
+        - name: "Deadline"
+          type: "string"
+          description: "Optional absolute RFC3339 deadline mapped to deadline."
+          constraints: "Empty means omitted; otherwise must parse as RFC3339 with Z or numeric offset and be later than submission-entry time; valid text is preserved."
+      relationships:
+        - target: "send_message request"
+          type: "one-to-one"
+          description: "One validated SendOptions value maps consistently through both typed send paths."
+    - name: "OptionError"
+      description: "Redacted stable validation failure returned by typed helpers before side effects."
+      fields:
+        - name: "Field"
+          type: "string"
+          description: "Safe stable name of the invalid option field."
+          constraints: "Contains no rejected value, prompt, response, frame, credential, or private identifier."
+        - name: "wrapped sentinel"
+          type: "error"
+          description: "ErrInvalidOptions exposed through errors.Is."
+          constraints: "All typed option validation failures unwrap to the same stable sentinel."
+      relationships:
+        - target: "CreateSessionOptions"
+          type: "many-to-one"
+          description: "Profile validation may return an OptionError."
+        - target: "SendOptions"
+          type: "many-to-one"
+          description: "MaxTurns, TokenBudget, or Deadline validation may return an OptionError."
+    - name: "Typed protocol payload"
+      description: "Private additive JSON field set used to construct protocol v1 RawRequest values."
+      fields:
+        - name: "create_session fields"
+          type: "private struct"
+          description: "working_dir plus optional profile."
+          constraints: "Zero-value new fields are absent from JSON."
+        - name: "send_message fields"
+          type: "private struct"
+          description: "Existing session_id, content, images, and no_reply plus optional max_turns, token_budget, and deadline."
+          constraints: "Shared by Send and StartTurn after typed validation; raw callers never pass through it."
+      relationships:
+        - target: "protocol.RawRequest"
+          type: "one-to-one"
+          description: "The validated private field struct is encoded by protocol.NewRawRequest without protocol package changes."
+
+api_contracts:
+  endpoints:
+    - method: "Go API"
+      path: "Client.CreateSession"
+      description: "Creates a typed session with an optional named profile while preserving the zero-value legacy request."
+      request:
+        content_type: "in-process Go call"
+        body_schema: "context.Context and CreateSessionOptions{WorkingDir string, Profile string}; empty Profile is omitted."
+      response:
+        success_code: 200
+        body_schema: "Session with existing SessionInfo and ID behavior."
+      errors:
+        - code: 400
+          description: "OptionError wrapping ErrInvalidOptions for a non-empty whitespace-only Profile, returned before observation or request activity."
+        - code: 503
+          description: "Existing request encoding, timeout, transport, protocol, or server reply error behavior."
+    - method: "Go API"
+      path: "Session.Send"
+      description: "Submits send_message with optional MaxTurns, TokenBudget, and Deadline while preserving acceptance-wait and NoReply notification behavior."
+      request:
+        content_type: "in-process Go call"
+        body_schema: "context.Context, content string, and SendOptions{Images, NoReply, MaxTurns, TokenBudget, Deadline}; zero safety fields are omitted."
+      response:
+        success_code: 200
+        body_schema: "error; nil after message_accepted for reply sends or after the notification write for NoReply sends."
+      errors:
+        - code: 400
+          description: "OptionError wrapping ErrInvalidOptions for negative limits, malformed or timezone-less deadline, or expired deadline, before request or subscription activity."
+        - code: 408
+          description: "Existing acceptance wait context interruption with unknown server-side mutation outcome and no automatic retry."
+        - code: 503
+          description: "Existing write, subscription, protocol, transport, or client closure error behavior."
+    - method: "Go API"
+      path: "Session.StartTurn"
+      description: "Starts the existing owned Turn with the same validated safety fields and unchanged subscription-before-write lifecycle."
+      request:
+        content_type: "in-process Go call"
+        body_schema: "lifecycle context, content string, and SendOptions with NoReply false and optional positive limits plus future RFC3339 Deadline."
+      response:
+        success_code: 200
+        body_schema: "*Turn returned after successful write and before acceptance, with existing Accepted, Next, Cancel, and Wait semantics."
+      errors:
+        - code: 400
+          description: "Existing ErrTurnNoReply or OptionError wrapping ErrInvalidOptions, with invalid safety options rejected before subscription, Turn, observation, request, or write creation."
+        - code: 408
+          description: "Existing ended lifecycle context behavior before an owned turn is created."
+        - code: 503
+          description: "Existing request encoding or transport write error; no retry or replay."
+
+project_structure:
+  documentation:
+    - path: "README.md"
+      description: "Document profile selection, run-safety fields, zero-value omission, RFC3339 deadline rules, typed validation inspection, NoReply behavior, and raw API non-validation."
+    - path: "docs/architecture.md"
+      description: "Record that typed request metadata is validated before side effects and does not change Client, Turn, Instance, raw protocol, cancellation, or retry ownership."
+    - path: "specs/073-add-session-run-safety/plan.yaml"
+      description: "Durable implementation design, constitution evaluation, research decisions, phases, and validation contract for this feature."
+  source_code:
+    - path: "session.go"
+      description: "Add the four public option fields, redacted stable option error surface, private validation helpers, private payload structs, and one shared send_message request builder while retaining existing public control flow."
+    - path: "protocol/protocol.go"
+      description: "No planned change; raw request construction and validation remain caller-controlled and forward-compatible."
+    - path: "turn.go"
+      description: "No planned change; owned-Turn cancellation, event ordering, dispatcher, and immutable terminal results remain authoritative."
+  tests:
+    - path: "session_options_test.go"
+      description: "New focused table-driven tests for zero omission, exact profile and safety mapping on Send and StartTurn, whitespace/negative/malformed/timezone-less/expired validation, no-side-effect counters, NoReply mapping, redaction, raw bypass, and deterministic repeated execution."
+    - path: "typed_api_test.go"
+      description: "Existing typed session and event compatibility coverage must pass unchanged."
+    - path: "turn_test.go"
+      description: "Existing Session.Send and StartTurn acceptance, notification-only, subscription ordering, cancellation, and owned lifecycle tests must pass unchanged and support focused race validation."
+    - path: "protocol/protocol_test.go"
+      description: "Existing raw protocol forward-compatibility tests must pass unchanged, including caller-supplied future fields."
+
+implementation_phases:
+  - phase: 1
+    name: "Write the option contract tests first"
+    goal: "Make omission, exact mapping, validation classification, side-effect freedom, redaction, and legacy lifecycle behavior executable before production changes."
+    deliverables:
+      - "Add exact JSON-key assertions for zero-value CreateSessionOptions and SendOptions, proving profile, max_turns, token_budget, and deadline are absent while existing fields are unchanged."
+      - "Add exact valid mapping cases for Profile and for each safety field independently and together on Session.Send, NoReply Send, and Session.StartTurn."
+      - "Add table-driven invalid cases for whitespace-only profile, negative limits, malformed deadline, missing timezone designator, and expired deadline, asserting errors.Is ErrInvalidOptions and errors.As OptionError without rejected values in error text."
+      - "Capture Client request/subscription counters and controlled peer traffic to prove invalid CreateSession, Send, and StartTurn cases create zero requests, writes, subscriptions, observations, or owned Turns."
+      - "Retain raw request coverage demonstrating fields bypass typed validation and add compatibility assertions for content, images, acceptance return point, NoReply notification behavior, and StartTurn subscription-before-write ordering."
+  - phase: 2
+    name: "Implement additive options and pre-side-effect validation"
+    goal: "Add the minimum public and private code needed to map valid values identically through both typed turn paths and reject invalid values locally."
+    dependencies:
+      - "Phase 1"
+    deliverables:
+      - "Add Profile, MaxTurns, TokenBudget, and Deadline to the existing option structs without changing method signatures or legacy fields."
+      - "Add ErrInvalidOptions and redacted OptionError with errors.Is/errors.As-compatible behavior and safe field-only diagnostics."
+      - "Implement private create-session and send-option validators; capture submission time once, parse Deadline with time.RFC3339, require a future instant, and never normalize valid caller text."
+      - "Move CreateSession validation before create_session_start observation and request construction."
+      - "Build create_session with optional profile and route Send and StartTurn through one private send_message payload builder after validation."
+      - "Keep Send's subscription/acceptance and NoReply branches and StartTurn's lifecycle guards, subscription creation, dispatcher start, write completion, and terminal handling otherwise unchanged."
+  - phase: 3
+    name: "Compatibility, documentation, and focused concurrency validation"
+    goal: "Prove the additive mapping does not alter raw APIs or owned lifecycle semantics and make the public contract discoverable."
+    dependencies:
+      - "Phase 2"
+    deliverables:
+      - "Run the focused option and legacy session tests, then run the focused deterministic option matrix with -count=10 to satisfy reproducibility evidence."
+      - "Run focused -race tests covering Session.Send and StartTurn option mapping, invalid pre-subscription rejection, acceptance ordering, cancellation, and terminal behavior."
+      - "Update README.md with concise usage and validation examples and update docs/architecture.md with the typed-validation boundary and unchanged ownership semantics."
+      - "Verify no public or serialized field named max_tool_steps and no provider credential or authentication field was introduced."
+  - phase: 4
+    name: "Repository validation and orchestrator handoff"
+    goal: "Complete bounded local evidence while preserving the assigned worker and integration boundary."
+    dependencies:
+      - "Phase 3"
+    deliverables:
+      - "Run gofmt on explicitly changed Go files, focused tests first, go test ./... -count=1 once, and git diff --check."
+      - "Inspect the explicit diff for zero-value request compatibility, raw protocol isolation, redaction, accidental max_tool_steps/provider fields, and unrelated changes."
+      - "During implementation, stage only explicitly changed files and create the scoped worker commit when the coordinator contract requests it; do not merge, push, mutate Beads, or clean worktrees."
+      - "Report the scoped files, commit if created, focused/repeated/race/full validation evidence, residual risks, and readiness for coordinator review and fresh-base validation."
+
+open_questions:
+  - question: "No blocking design questions remain for task decomposition."
+    context: "The feature spec fixes the option ownership, field names, zero-value semantics, raw compatibility, lifecycle boundary, and deterministic validation requirements."
+    proposed_resolution: "Proceed to /autospec.tasks with string Deadline validation, ErrInvalidOptions plus OptionError, and the shared typed send_message builder defined in this plan."
+
+_meta:
+  version: "1.0.0"
+  generator: "autospec"
+  generator_version: "autospec dev"
+  created: "2026-08-22T23:51:51Z"
+  artifact_type: "plan"

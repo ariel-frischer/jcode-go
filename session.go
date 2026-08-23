@@ -7,9 +7,25 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/ariel-frischer/jcode-go/protocol"
 )
+
+// ErrInvalidOptions classifies validation failures in typed SDK options.
+var ErrInvalidOptions = errors.New("invalid options")
+
+// OptionError identifies the typed option field that failed validation.
+// It intentionally retains no rejected value.
+type OptionError struct {
+	Field string
+}
+
+func (e *OptionError) Error() string {
+	return fmt.Sprintf("invalid option %s", e.Field)
+}
+
+func (*OptionError) Unwrap() error { return ErrInvalidOptions }
 
 // SessionInfo is the stable session metadata returned by the harness API.
 type SessionInfo struct {
@@ -24,11 +40,25 @@ type SessionInfo struct {
 
 type CreateSessionOptions struct {
 	WorkingDir string
+	Profile    string
 }
 
 type SendOptions struct {
-	Images  [][2]string
-	NoReply bool
+	Images      [][2]string
+	NoReply     bool
+	MaxTurns    int
+	TokenBudget int
+	Deadline    string
+}
+
+type sendMessageFields struct {
+	SessionID   string      `json:"session_id"`
+	Content     string      `json:"content"`
+	Images      [][2]string `json:"images,omitempty"`
+	NoReply     bool        `json:"no_reply,omitempty"`
+	MaxTurns    int         `json:"max_turns,omitempty"`
+	TokenBudget int         `json:"token_budget,omitempty"`
+	Deadline    string      `json:"deadline,omitempty"`
 }
 
 // EventError reports a terminal error emitted by the harness for a session
@@ -57,10 +87,14 @@ type Session struct {
 }
 
 func (c *Client) CreateSession(ctx context.Context, options CreateSessionOptions) (Session, error) {
+	if err := validateCreateSessionOptions(options); err != nil {
+		return Session{}, err
+	}
 	c.emit(Observation{Kind: "create_session_start", Request: "create_session"})
 	req, err := protocol.NewRawRequest("create_session", struct {
 		WorkingDir string `json:"working_dir,omitempty"`
-	}{options.WorkingDir})
+		Profile    string `json:"profile,omitempty"`
+	}{options.WorkingDir, options.Profile})
 	if err != nil {
 		c.emit(Observation{Kind: "create_session_error", Request: "create_session", Error: "request_encode"})
 		return Session{}, err
@@ -96,6 +130,13 @@ func (c *Client) CreateSession(ctx context.Context, options CreateSessionOptions
 	return Session{client: c, Info: response.Session, ID: response.Session.ID}, nil
 }
 
+func validateCreateSessionOptions(options CreateSessionOptions) error {
+	if options.Profile != "" && strings.TrimSpace(options.Profile) == "" {
+		return &OptionError{Field: "profile"}
+	}
+	return nil
+}
+
 func (c *Client) AttachSession(ctx context.Context, id string) (Session, error) {
 	req, err := protocol.NewRawRequest("attach_session", struct {
 		SessionID string `json:"session_id"`
@@ -121,17 +162,13 @@ func (c *Client) AttachSession(ctx context.Context, id string) (Session, error) 
 }
 
 func (s Session) Send(ctx context.Context, content string, options SendOptions) error {
+	if err := validateSendOptions(options, time.Now()); err != nil {
+		return err
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	images := make([][2]string, len(options.Images))
-	copy(images, options.Images)
-	req, err := protocol.NewRawRequest("send_message", struct {
-		SessionID string      `json:"session_id"`
-		Content   string      `json:"content"`
-		Images    [][2]string `json:"images,omitempty"`
-		NoReply   bool        `json:"no_reply,omitempty"`
-	}{s.ID, content, images, options.NoReply})
+	req, err := newSendMessageRequest(s.ID, content, options)
 	if err != nil {
 		return err
 	}
@@ -166,6 +203,9 @@ func (s Session) Send(ctx context.Context, content string, options SendOptions) 
 // before send_message is written, so fast acceptance and terminal events cannot
 // be missed. The method returns after the write succeeds, before acceptance.
 func (s Session) StartTurn(lifecycleCtx context.Context, content string, options SendOptions) (*Turn, error) {
+	if err := validateSendOptions(options, time.Now()); err != nil {
+		return nil, err
+	}
 	if options.NoReply {
 		return nil, ErrTurnNoReply
 	}
@@ -181,13 +221,7 @@ func (s Session) StartTurn(lifecycleCtx context.Context, content string, options
 	}
 	s.client.emit(Observation{Kind: "turn_start"})
 
-	images := make([][2]string, len(options.Images))
-	copy(images, options.Images)
-	req, err := protocol.NewRawRequest("send_message", struct {
-		SessionID string      `json:"session_id"`
-		Content   string      `json:"content"`
-		Images    [][2]string `json:"images,omitempty"`
-	}{s.ID, content, images})
+	req, err := newSendMessageRequest(s.ID, content, options)
 	if err != nil {
 		return nil, fmt.Errorf("encode turn message: %w", err)
 	}
@@ -206,6 +240,37 @@ func (s Session) StartTurn(lifecycleCtx context.Context, content string, options
 	}
 	turn.markWriteComplete()
 	return turn, nil
+}
+
+func validateSendOptions(options SendOptions, submissionTime time.Time) error {
+	if options.MaxTurns < 0 {
+		return &OptionError{Field: "max_turns"}
+	}
+	if options.TokenBudget < 0 {
+		return &OptionError{Field: "token_budget"}
+	}
+	if options.Deadline == "" {
+		return nil
+	}
+	deadline, err := time.Parse(time.RFC3339, options.Deadline)
+	if err != nil || !deadline.After(submissionTime) {
+		return &OptionError{Field: "deadline"}
+	}
+	return nil
+}
+
+func newSendMessageRequest(sessionID, content string, options SendOptions) (protocol.RawRequest, error) {
+	images := make([][2]string, len(options.Images))
+	copy(images, options.Images)
+	return protocol.NewRawRequest("send_message", sendMessageFields{
+		SessionID:   sessionID,
+		Content:     content,
+		Images:      images,
+		NoReply:     options.NoReply,
+		MaxTurns:    options.MaxTurns,
+		TokenBudget: options.TokenBudget,
+		Deadline:    options.Deadline,
+	})
 }
 
 func (s Session) Events(ctx context.Context) *TypedEventStream {
