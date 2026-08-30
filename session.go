@@ -165,6 +165,36 @@ func (c *Client) AttachSession(ctx context.Context, id string) (Session, error) 
 	return Session{client: c, Info: response.Session, ID: response.Session.ID}, nil
 }
 
+// ForkSession clones a session's persisted context into a new session.
+func (c *Client) ForkSession(ctx context.Context, id string) (Session, error) {
+	req, err := protocol.NewRawRequest("fork_session", struct {
+		SessionID string `json:"session_id"`
+	}{id})
+	if err != nil {
+		return Session{}, err
+	}
+	frame, err := c.Request(ctx, req)
+	if err != nil {
+		return Session{}, err
+	}
+	if value, ok := frame.Event.(protocol.Error); ok {
+		return Session{}, EventError{
+			Code:         value.Code,
+			Message:      value.Message,
+			ProviderCode: value.ProviderCode,
+		}
+	}
+	fields, ok := protocol.FieldsJSON(frame.Event)
+	if !ok || protocol.EventKind(frame.Event) != "session_forked" {
+		return Session{}, fmt.Errorf("unexpected fork_session reply: %s", eventKind(frame.Event))
+	}
+	var response SessionForked
+	if err := json.Unmarshal(fields, &response); err != nil {
+		return Session{}, err
+	}
+	return Session{client: c, Info: response.Session, ID: response.Session.ID}, nil
+}
+
 func (s Session) Send(ctx context.Context, content string, options SendOptions) error {
 	if err := validateSendOptions(options, time.Now()); err != nil {
 		return err
@@ -526,6 +556,22 @@ type ConnectionPhase struct {
 
 func (ConnectionPhase) typedEvent() {}
 
+// SessionForked reports the new session returned by ForkSession.
+type SessionForked struct {
+	Session SessionInfo `json:"session"`
+}
+
+func (SessionForked) typedEvent() {}
+
+// WakeRequested asks an external operator to decide when to run a session.
+type WakeRequested struct {
+	SessionID    string `json:"session_id"`
+	Reason       string `json:"reason"`
+	Notification string `json:"notification"`
+}
+
+func (WakeRequested) typedEvent() {}
+
 type ModelInfo struct {
 	SessionID       string `json:"session_id"`
 	Provider        string `json:"provider,omitempty"`
@@ -707,6 +753,10 @@ func decodeTypedEvent(event Event) (TypedEvent, error) {
 		value = &SessionStatus{}
 	case "connection_phase":
 		value = &ConnectionPhase{}
+	case "session_forked":
+		value = &SessionForked{}
+	case "wake_requested":
+		value = &WakeRequested{}
 	case "model_info":
 		value = &ModelInfo{}
 	case "models":

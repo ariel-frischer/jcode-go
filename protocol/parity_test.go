@@ -40,8 +40,8 @@ func TestRustSchemaParity(t *testing.T) {
 
 func TestProtocolFixtureParity(t *testing.T) {
 	requests := requestTags()
-	if len(requests) != 31 {
-		t.Fatalf("request fixture count=%d, want 31", len(requests))
+	if len(requests) != 32 {
+		t.Fatalf("request fixture count=%d, want 32", len(requests))
 	}
 	for _, tag := range requests {
 		req, err := NewRawRequest(tag, map[string]any{"fixture": true})
@@ -284,11 +284,11 @@ func semanticClassValue(name string) string {
 }
 
 func requestTags() []string {
-	return []string{"hello", "list_sessions", "archive_session", "restore_session", "set_retention_policy", "create_session", "attach_session", "detach_session", "send_message", "cancel", "soft_interrupt", "get_history", "peek_session", "clear", "rewind", "permission_response", "list_models", "get_runtime_info", "set_api_key", "clear_api_key", "read_file", "find_files", "search_text", "file_status", "set_model", "set_reasoning_effort", "compact", "rename_session", "rewind_undo", "cancel_soft_interrupts", "ping"}
+	return []string{"hello", "list_sessions", "archive_session", "restore_session", "set_retention_policy", "create_session", "attach_session", "fork_session", "detach_session", "send_message", "cancel", "soft_interrupt", "get_history", "peek_session", "clear", "rewind", "permission_response", "list_models", "get_runtime_info", "set_api_key", "clear_api_key", "read_file", "find_files", "search_text", "file_status", "set_model", "set_reasoning_effort", "compact", "rename_session", "rewind_undo", "cancel_soft_interrupts", "ping"}
 }
 
 func eventTags() []string {
-	return []string{"hello_ok", "ok", "error", "sessions", "attached", "history", "pong", "text_delta", "reasoning_delta", "reasoning_done", "tool_start", "tool_input_delta", "tool_exec", "tool_done", "side_pane_images", "token_usage", "turn_done", "background_progress", "message_accepted", "permission_request", "session_status", "model_info", "models", "runtime_info", "connection_phase", "credential_updated", "file_content", "files", "text_matches", "file_status", "compacted", "session_renamed"}
+	return []string{"hello_ok", "ok", "error", "sessions", "attached", "session_forked", "history", "pong", "text_delta", "reasoning_delta", "reasoning_done", "tool_start", "tool_input_delta", "tool_exec", "tool_done", "side_pane_images", "token_usage", "turn_done", "wake_requested", "background_progress", "message_accepted", "permission_request", "session_status", "model_info", "models", "runtime_info", "connection_phase", "credential_updated", "file_content", "files", "text_matches", "file_status", "compacted", "session_renamed"}
 }
 
 func eventKindForTest(event Event) string {

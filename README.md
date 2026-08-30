@@ -127,7 +127,18 @@ for {
 }
 ```
 
-`AttachSession` creates the same lightweight typed view for an existing ID. `Session.Send` subscribes before notifying the server and waits for the asynchronous `message_accepted` event. `SendOptions.NoReply` selects fire-and-forget notification semantics. `Session.Send` does not retry because a timeout can leave a mutation with an unknown server-side outcome.
+`AttachSession` creates the same lightweight typed view for an existing ID.
+`client.ForkSession(ctx, session.ID)` clones the source session's persisted context and
+returns the new session reported by `session_forked`. In external wake mode,
+typed event streams decode `wake_requested` as `*jcode.WakeRequested`, preserving
+its session ID, reason, and notification so the caller can decide when to run
+the session. Raw `Request` and `Subscribe` access remains available, while
+`Session.Events` continues to provide typed decoding.
+
+`Session.Send` subscribes before notifying the server and waits for the
+asynchronous `message_accepted` event. `SendOptions.NoReply` selects
+fire-and-forget notification semantics. `Session.Send` does not retry because a
+timeout can leave a mutation with an unknown server-side outcome.
 
 ### Session profiles and per-turn safety
 
