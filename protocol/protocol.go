@@ -164,6 +164,7 @@ var knownEvents = map[string]struct{}{
 	"message_accepted": {}, "permission_request": {}, "session_status": {}, "model_info": {}, "models": {},
 	"runtime_info": {}, "credential_updated": {}, "file_content": {}, "files": {}, "text_matches": {},
 	"file_status": {}, "compacted": {}, "connection_phase": {}, "session_renamed": {},
+	"session_forked": {}, "wake_requested": {},
 }
 
 func IsKnownEvent(kind string) bool { _, ok := knownEvents[kind]; return ok }
