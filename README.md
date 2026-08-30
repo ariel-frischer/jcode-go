@@ -128,7 +128,7 @@ for {
 ```
 
 `AttachSession` creates the same lightweight typed view for an existing ID.
-`ForkSession(ctx, session.ID)` clones the source session's persisted context and
+`client.ForkSession(ctx, session.ID)` clones the source session's persisted context and
 returns the new session reported by `session_forked`. In external wake mode,
 typed event streams decode `wake_requested` as `*jcode.WakeRequested`, preserving
 its session ID, reason, and notification so the caller can decide when to run
